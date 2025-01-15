@@ -144,6 +144,7 @@ class WorldMap:
             plt.scatter(self.demes["xcoord"], self.demes["ycoord"], c=self.demes["type"], zorder=2, s=100)
         else:
             plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, color="grey")
+        plt.gca().set_aspect("equal")
         plt.axis("off")
         plt.show()
 
@@ -175,7 +176,7 @@ class WorldMap:
         return transition_matrix
 
     def build_sample_location_vectors(self, sample_locations):
-        """Builds sample location vectors based on the ordering of states in the world map
+        """Builds sample location vectors based on the ordering of demes in the world map
 
         Parameters
         ----------
@@ -195,16 +196,77 @@ class WorldMap:
         return sample_location_vectors
 
 
+def _calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix):
+    """Calculates the log_likelihood of the tree using Felsenstein's Pruning Algorithm.
 
+    NOTE: Assumes that samples are always tips on the tree.
 
+    Parameters
+    ----------
+    tree : tskit.Tree
+        This is a tree taken from the tskit.TreeSequence.
+    sample_location_vectors : dict
+        Contains all of the location vectors for the samples
+    transition_matrix : np.matrix
+        Instantaneous migration rate matrix between demes
 
+    Returns
+    -------
+    tree_likelihood : float
+        likelihood of the tree (product of the root likelihoods)
+    root_log_likes : list
+        List of root likelihoods (sum of the root locations vector)
+    """
 
+    log_messages = {}
+    for l in sample_location_vectors:
+        log_messages[l] = np.log(np.matmul(sample_location_vectors[l], linalg.expm(transition_matrix*tree.branch_length(l))))
 
+    for node in tree.nodes(order="timeasc"):
+        children = tree.children(node)
+        if len(children) > 0:
+            incoming_log_messages = []
+            for child in children:
+                incoming_log_messages.append(log_messages[child])
+            summed_log_messages = np.sum(incoming_log_messages, axis=0)
+            outgoing_log_message = np.array([logsumexp(np.log(linalg.expm(transition_matrix*tree.branch_length(child))).T + summed_log_messages, axis=1)])
+            log_messages[node] = outgoing_log_message
+    
+    roots = tree.roots
+    root_log_likes = [logsumexp(log_messages[r]) for r in roots]
+    tree_likelihood = sum(root_log_likes)
 
+    return tree_likelihood, root_log_likes
 
+def calc_migration_rate_log_likelihood(world_map, trees, migration_rates, sample_location_vectors):
+    """Calculates the composite log-likelihood of the specified migration rates across trees
+    
+    Loops through all trees and calculates the log-likelihood for each, before summing together.
 
+    Parameters
+    ----------
+    world_map : terracotta.WorldMap
 
+    trees : list
+        List of tskit.Tree objects
+    migration_rates : dict
+        Keys are the connection type and values are the instantaneous migration
+        rate along that connection
+    sample_location_vectors : dict
+        Contains all of the location vectors for the samples
 
+    Returns
+    -------
+    mr_log_like : float
+        Log-likelihood of the specified migration rates
+    """
+
+    transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
+    log_likelihoods = []
+    for tree in trees:
+        log_likelihoods.append(_calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix)[0])
+    mr_log_like = sum(log_likelihoods)
+    return mr_log_like, log_likelihoods
 
 def _create_grid_demes_file(side_length, number_of_deme_types=1, output_path="demes.tsv"):
     """Creates the world map input file that pairs with grid.slim or msprime of specified size
@@ -327,7 +389,7 @@ def _create_samples_file_from_tree_sequence(input_trees_path=None, ts=None, outp
         ts.dump(output_trees_path)
 
     with open(output_samples_path, "w") as outfile:
-        outfile.write("id\tstate\n")
+        outfile.write("id\tdeme\n")
         for sample in ts.samples():
             outfile.write(f"{sample}\t{ts.node(sample).population}\n")
 
@@ -388,8 +450,7 @@ def create_grid_demography_dataset(
         ploidy,
         allow_multiple_samples_per_deme,
         pop_size,
-        migration_rates,
-        output_directory
+        migration_rates
     ):
     """Creates a new dataset based on the specified grid metapopulation demographic model
 
@@ -415,72 +476,19 @@ def create_grid_demography_dataset(
         Population size of each deme
     migration_rates : dict
         Key is the type of connection and value is the migration rate of that connection type
-    output_directory : string
-        Name of the directory that will be created to hold the output files
     """
 
-    mkdir(output_directory)
     _create_grid_demes_file(
         side_length=side_length,
         number_of_deme_types=number_of_deme_types,
-        output_path=f"{output_directory}/demes.tsv"
+        output_path="demes.tsv"
     )
     _create_samples_and_trees_files(
-        demes_path=f"{output_directory}/demes.tsv",
+        demes_path="demes.tsv",
         number_of_samples=number_of_samples,
         allow_multiple_samples_per_deme=allow_multiple_samples_per_deme,
         number_of_trees=number_of_trees,
         ploidy=ploidy,
         pop_size=pop_size,
-        migration_rates=migration_rates,
-        output_directory=f"{output_directory}"
+        migration_rates=migration_rates
     )
-
-
-
-
-
-
-
-
-def calc_tree_log_likelihood(tree, sample_locs, transition_matrix):
-    """Calculates the log_likelihood of the tree using Felsenstein's Pruning Algorithm.
-
-    NOTE: Assumes that samples are always tips on the tree.
-
-    Parameters
-    ----------
-    tree : tskit.Tree
-        This is a tree taken from the tskit.TreeSequence.
-    sample_locs : dict
-        Contains all of the location vectors for the samples
-    transition_matrix : np.matrix
-        Instantaneous migration rate matrix between states
-
-    Returns
-    -------
-    tree_likelihood : float
-        likelihood of the tree (product of the root likelihoods)
-    root_log_likes : list
-        List of root likelihoods (sum of the root locations vector)
-    """
-
-    log_messages = {}
-    for l in sample_locs:
-        log_messages[l] = np.log(np.matmul(sample_locs[l], linalg.expm(transition_matrix*tree.branch_length(l))))
-
-    for node in tree.nodes(order="timeasc"):
-        children = tree.children(node)
-        if len(children) > 0:
-            incoming_log_messages = []
-            for child in children:
-                incoming_log_messages.append(log_messages[child])
-            summed_log_messages = np.sum(incoming_log_messages, axis=0)
-            outgoing_log_message = np.array([logsumexp(np.log(linalg.expm(transition_matrix*tree.branch_length(child))).T + summed_log_messages, axis=1)])
-            log_messages[node] = outgoing_log_message
-    
-    roots = tree.roots
-    root_log_likes = [logsumexp(log_messages[r]) for r in roots]
-    tree_likelihood = sum(root_log_likes)
-
-    return tree_likelihood, root_log_likes
