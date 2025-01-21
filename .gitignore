@@ -6,3 +6,4 @@ scripts_to_remove/
 __pycache__/
 terracotta/to_delete.py
 devlog/logs/threads.md
+slim/

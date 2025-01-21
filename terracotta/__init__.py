@@ -200,6 +200,7 @@ def _calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix):
     """Calculates the log_likelihood of the tree using Felsenstein's Pruning Algorithm.
 
     NOTE: Assumes that samples are always tips on the tree.
+    NOTE: Ignores samples that are completely detached from the tree(s).
 
     Parameters
     ----------
@@ -220,7 +221,9 @@ def _calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix):
 
     log_messages = {}
     for l in sample_location_vectors:
-        log_messages[l] = np.log(np.matmul(sample_location_vectors[l], linalg.expm(transition_matrix*tree.branch_length(l))))
+        bl = tree.branch_length(l)
+        if bl > 0:
+            log_messages[l] = np.log(np.matmul(sample_location_vectors[l], linalg.expm(transition_matrix*bl)))
 
     for node in tree.nodes(order="timeasc"):
         children = tree.children(node)
@@ -233,7 +236,7 @@ def _calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix):
             log_messages[node] = outgoing_log_message
     
     roots = tree.roots
-    root_log_likes = [logsumexp(log_messages[r]) for r in roots]
+    root_log_likes = [logsumexp(log_messages[r]) for r in roots if r not in sample_location_vectors]
     tree_likelihood = sum(root_log_likes)
 
     return tree_likelihood, root_log_likes
@@ -491,4 +494,24 @@ def create_grid_demography_dataset(
         ploidy=ploidy,
         pop_size=pop_size,
         migration_rates=migration_rates
+    )
+
+def create_dataset_from_slim_output(ts, side_length, gap_between_trees=1, num_random_samples=-1):
+    if num_random_samples != 1:
+        samples = list(np.random.choice(ts.samples(), num_random_samples, replace=False))
+        ts = ts.simplify(samples=samples)
+    mkdir("trees")
+    for i in range(0, ts.num_trees, gap_between_trees):
+        tree = ts.at_index(i)
+        interval = tree.interval
+        single_tree_ts = ts.keep_intervals([interval], simplify=True).trim()
+        single_tree_ts.dump(f"trees/{i}.trees")
+    _create_grid_demes_file(
+        side_length=side_length,
+        number_of_deme_types=1,
+        output_path="demes.tsv"
+    )
+    _create_samples_file_from_tree_sequence(
+        ts=single_tree_ts,
+        output_samples_path="samples.tsv"
     )

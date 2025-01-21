@@ -1,0 +1,46 @@
+initialize() {
+	initializeTreeSeq();
+	initializeMutationRate(0);
+	initializeMutationType("m1", 0.5, "f", 0.0);
+	initializeMutationType("m2", 0.5, "f", 0.5);
+	initializeGenomicElementType("g1", m1, 1.0);
+	initializeGenomicElement(g1, 0, 99);
+	initializeRecombinationRate(0.5);
+}
+
+1 early() {
+	metapopSide = 10; // number of subpops along one side of the grid
+	metapopSize = metapopSide * metapopSide;
+	for (i in 1:metapopSize)
+		sim.addSubpop("p"+asString(i), 500);
+	subpops = sim.subpopulations;
+	for (x in 1:metapopSide)
+		for (y in 1:metapopSide)
+		{
+			destID = (x - 1) + (y - 1) * metapopSide + 1;
+			destSubpop = subpops[destID - 1];
+			if (x > 1) // left to right
+				destSubpop.setMigrationRates(destID - 1, 0.05);
+			if (x < metapopSide) // right to left
+				destSubpop.setMigrationRates(destID + 1, 0.05);
+			if (y > 1) // top to bottom
+				destSubpop.setMigrationRates(destID - metapopSide, 0.05);
+			if (y < metapopSide) // bottom to top
+				destSubpop.setMigrationRates(destID + metapopSide, 0.05);
+		}
+}
+
+1500 late() {
+	target = sample(p55.genomes, 1);
+	target.addNewDrawnMutation(m2, 5);
+}
+
+1500:1600 late() {
+	if (sim.countOfMutationsOfType(m2) == 0)
+		sim.simulationFinished();
+		sim.treeSeqOutput("/Users/jameskitchens/Desktop/selective_sweep.trees");
+}
+
+1600 late() {
+	sim.treeSeqOutput("/Users/jameskitchens/Desktop/selective_sweep.trees");
+}
