@@ -115,7 +115,7 @@ class WorldMap:
     
     get_neighbours_of_deme = get_neighbors_of_deme
 
-    def draw(self, color_demes=False, color_connections=False):
+    def draw(self, color_demes=False, color_connections=False, samples=None):
         """Draws the world map
 
         Uses matplotlib.pyplot
@@ -126,6 +126,8 @@ class WorldMap:
             Whether to color the demes based on type
         color_connections : bool
             Whether to color the connections based on type
+        samples : pd.DataFrame
+            (default=None, ignored)
         """
 
         if color_connections:
@@ -144,6 +146,11 @@ class WorldMap:
             plt.scatter(self.demes["xcoord"], self.demes["ycoord"], c=self.demes["type"], zorder=2, s=100)
         else:
             plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, color="grey")
+        if isinstance(samples, pd.DataFrame):
+            counts = samples["deme"].value_counts().reset_index()
+            counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
+            print(counts)
+            plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*50, zorder=3)
         plt.gca().set_aspect("equal")
         plt.axis("off")
         plt.show()
@@ -457,9 +464,7 @@ def create_grid_demography_dataset(
     ):
     """Creates a new dataset based on the specified grid metapopulation demographic model
 
-    Creates a directory at "output_directory" with a "demes.tsv", "samples.tsv", ".trees" files
-
-    TODO: Add a check for whether a directory exists already
+    Creates "demes.tsv", "samples.tsv", "trees/" folder with ".trees" files
 
     Parameters
     ----------
@@ -497,9 +502,29 @@ def create_grid_demography_dataset(
     )
 
 def create_dataset_from_slim_output(ts, side_length, gap_between_trees=1, num_random_samples=-1):
-    if num_random_samples != 1:
-        samples = list(np.random.choice(ts.samples(), num_random_samples, replace=False))
+    """Creates input files from SLiM simulation tree sequence
+
+    Creates "demes.tsv", "samples.tsv", "trees/" folder with ".trees" files
+
+    Parameters
+    ----------
+    ts : tskit.TreeSequence
+        The tree sequence output by the SLiM simulation
+    side_length : int
+        The number of demes along one side of the square grid demography
+    gap_between_trees : int
+        The gap between sampled trees in the tree sequence. (default=1 : all trees included)
+    num_random_samples : int
+        Simplify the tree sequence to this many samples. (default=-1 : ignored, all samples included)
+    """
+
+    if num_random_samples != -1:
+        samples = list(np.random.choice(list(ts.samples()), num_random_samples, replace=False))
         ts = ts.simplify(samples=samples)
+    _create_samples_file_from_tree_sequence(
+        ts=ts,
+        output_samples_path="samples.tsv"
+    )
     mkdir("trees")
     for i in range(0, ts.num_trees, gap_between_trees):
         tree = ts.at_index(i)
@@ -511,7 +536,4 @@ def create_dataset_from_slim_output(ts, side_length, gap_between_trees=1, num_ra
         number_of_deme_types=1,
         output_path="demes.tsv"
     )
-    _create_samples_file_from_tree_sequence(
-        ts=single_tree_ts,
-        output_samples_path="samples.tsv"
-    )
+    
