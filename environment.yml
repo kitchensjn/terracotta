@@ -6,9 +6,9 @@ dependencies:
   - pip
   - jupyterlab
   - numpy
-  - networkx
   - tskit
   - scipy
+  - ipywidgets
   - tqdm
   - matplotlib
   - msprime

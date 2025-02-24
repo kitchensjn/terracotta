@@ -1,0 +1,24 @@
+# Table Of Contents
+
+- 20241202
+    - Broad overview of the devlogs
+    - Introduction to `terracotta`
+    - Calculating the (log-)likelihood of a tree (#3)
+    - Simulating trees with `msprime` under demographic model (#4)
+    - Population size simulations
+- 20241216
+    - Multiple roots
+    - Deme types
+    - Multiple migration rates simulator
+- 20241230
+    - Estimating multiple migration rates
+- 20250113
+    - The WHY pitch
+    - Identifying important trees
+    - Discussion of selection's effect on results
+- 20250127
+    - World map builder
+    - Drawing migration surfaces
+- 20250210
+    - `terracotta` with ARGs
+    - Junction tree algorithm

@@ -2,13 +2,19 @@ import numpy as np
 from scipy import linalg
 from scipy.special import logsumexp
 import tskit
-import networkx as nx
 import msprime
 from os import mkdir
 import random
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import pandas as pd
+from itertools import combinations_with_replacement
 
+
+def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0) to c2 (mix=1)
+    c1=np.array(mpl.colors.to_rgb(c1))
+    c2=np.array(mpl.colors.to_rgb(c2))
+    return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
 
 class WorldMap:
     """Stores a map of the demes
@@ -41,7 +47,7 @@ class WorldMap:
         connections = []
         converted_neighbors = []
         for index,row in demes.iterrows():
-            neighbors = row["neighbours"].split(",")
+            neighbors = str(row["neighbours"]).split(",")
             int_neighbors = []
             for neighbor in neighbors:
                 neighbor = int(neighbor)
@@ -115,7 +121,7 @@ class WorldMap:
     
     get_neighbours_of_deme = get_neighbors_of_deme
 
-    def draw(self, color_demes=False, color_connections=False, samples=None):
+    def draw(self, color_demes=False, color_connections=False, samples=None, migration_rates=None, save_to=None):
         """Draws the world map
 
         Uses matplotlib.pyplot
@@ -130,6 +136,10 @@ class WorldMap:
             (default=None, ignored)
         """
 
+        if migration_rates != None:
+            mr_values = migration_rates.values()
+            max_mr = max(mr_values)
+            min_mr = min(mr_values)
         if color_connections:
             num_connection_types = len(self.connections["type"].unique())
             color_rnd = random.Random()
@@ -138,7 +148,10 @@ class WorldMap:
         for index,row in self.connections.iterrows():
             deme_0 = self.get_coordinates_of_deme(row["deme_0"])
             deme_1 = self.get_coordinates_of_deme(row["deme_1"])
-            if color_connections:
+            if migration_rates != None:
+                mr = ((migration_rates[row["type"]]-min_mr)/(max_mr-min_mr))
+                plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=colorFader("blue", "green", mr), linewidth=5)
+            elif color_connections:
                 plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=connection_colors[row["type"]], linewidth=5)
             else:
                 plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
@@ -149,10 +162,11 @@ class WorldMap:
         if isinstance(samples, pd.DataFrame):
             counts = samples["deme"].value_counts().reset_index()
             counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
-            print(counts)
             plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*50, zorder=3)
         plt.gca().set_aspect("equal")
         plt.axis("off")
+        if save_to != None:
+            plt.savefig(save_to)
         plt.show()
 
     def build_transition_matrix(self, migration_rates):
@@ -329,6 +343,34 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rates):
         demography.set_migration_rate("Pop_"+str(connection["deme_1"]), "Pop_"+str(connection["deme_0"]), rate)
     return demography
 
+def _simulate_arg(
+        world_map,
+        sequence_length,
+        recombination_rate,
+        ploidy,
+        number_of_samples,
+        allow_multiple_samples_per_deme,
+        pop_size,
+        migration_rates
+    ):
+    """
+    """
+
+    demography = _set_up_msprime_demography(world_map=world_map, pop_size=pop_size, migration_rates=migration_rates)
+    random_samples = np.random.choice(world_map.demes["id"], number_of_samples, replace=allow_multiple_samples_per_deme)
+    samples = {}
+    for s in random_samples:
+        samples["Pop_"+str(s)] = samples.get("Pop_"+str(s), 0) + 1
+    arg = msprime.sim_ancestry(
+        samples=samples,
+        ploidy=ploidy,
+        sequence_length=sequence_length,
+        recombination_rate=recombination_rate,
+        demography=demography,
+        record_full_arg=True
+    )
+    return arg
+
 def _simulate_independent_trees(
         world_map,
         number_of_trees,
@@ -403,14 +445,77 @@ def _create_samples_file_from_tree_sequence(input_trees_path=None, ts=None, outp
         for sample in ts.samples():
             outfile.write(f"{sample}\t{ts.node(sample).population}\n")
 
-def _create_samples_and_trees_files(
+def create_samples_and_arg_files(
+        demes_path,
+        number_of_samples,
+        sequence_length,
+        recombination_rate,
+        ploidy,
+        allow_multiple_samples_per_deme,
+        pop_size,
+        migration_rate=None,
+        migration_rates=None,
+        output_directory="."
+    ):
+    """
+    Parameters
+    ----------
+    demes_path : string
+    number_of_samples : int
+    sequence_length : int
+    recombination_rate : float
+    ploidy : int
+        The ploidy of the samples
+    allow_multiple_samples_per_deme : bool
+    pop_size : int
+        The population size of each deme
+    migration_rate : int
+        Single migration rate between neighboring demes. (default=None, ignored)
+    migration_rates : dict
+        Key is the type of connection and value is the migration rate of that connection type. (default=None, ignored)
+    output_directory : string
+        (default=".")
+    """
+
+    demes = pd.read_csv(demes_path, sep="\t")
+
+    if migration_rate == None and migration_rates == None:
+        raise RuntimeError("Must provide either `migration_rate` or `migration_rates`.")
+    elif migration_rate != None and migration_rates != None:
+        raise RuntimeError("Must provide either `migration_rate` or `migration_rates`, not both.")
+    elif migration_rate != None:
+        deme_types = demes["type"].unique()
+        transitions = list(combinations_with_replacement(deme_types, 2))
+        migration_rates = {i:migration_rate for i in range(len(transitions))}
+
+    if (not allow_multiple_samples_per_deme) and (number_of_samples > len(demes)):
+        raise RuntimeError(f"There are more samples than demes ({number_of_samples} versus {len(demes)}). You must either allow multiple samples per deme or reduce the number of samples.")
+    world_map = WorldMap(demes=demes)
+    arg = _simulate_arg(
+        world_map=world_map,
+        sequence_length=sequence_length,
+        recombination_rate=recombination_rate,
+        ploidy=ploidy,
+        number_of_samples=number_of_samples,
+        allow_multiple_samples_per_deme=allow_multiple_samples_per_deme,
+        pop_size=pop_size,
+        migration_rates=migration_rates
+    )
+    arg.dump(f"{output_directory}/arg.trees")
+    _create_samples_file_from_tree_sequence(
+        ts=arg,
+        output_samples_path=f"{output_directory}/samples.tsv"
+    )
+
+def create_samples_and_trees_files(
         demes_path,
         number_of_trees,
         number_of_samples,
         ploidy,
         allow_multiple_samples_per_deme,
         pop_size,
-        migration_rates,
+        migration_rate=None,
+        migration_rates=None,
         output_directory="."
     ):
     """
@@ -425,13 +530,25 @@ def _create_samples_and_trees_files(
     allow_multiple_samples_per_deme : bool
     pop_size : int
         The population size of each deme
+    migration_rate : int
+        Single migration rate between neighboring demes. (default=None, ignored)
     migration_rates : dict
-        Key is the type of connection and value is the migration rate of that connection type
+        Key is the type of connection and value is the migration rate of that connection type. (default=None, ignored)
     output_directory : string
         (default=".")
     """
 
     demes = pd.read_csv(demes_path, sep="\t")
+
+    if migration_rate == None and migration_rates == None:
+        raise RuntimeError("Must provide either `migration_rate` or `migration_rates`.")
+    elif migration_rate != None and migration_rates != None:
+        raise RuntimeError("Must provide either `migration_rate` or `migration_rates`, not both.")
+    elif migration_rate != None:
+        deme_types = demes["type"].unique()
+        transitions = list(combinations_with_replacement(deme_types, 2))
+        migration_rates = {i:migration_rate for i in range(len(transitions))}
+
     if (not allow_multiple_samples_per_deme) and (number_of_samples > len(demes)):
         raise RuntimeError(f"There are more samples than demes ({number_of_samples} versus {len(demes)}). You must either allow multiple samples per deme or reduce the number of samples.")
     world_map = WorldMap(demes=demes)
@@ -460,7 +577,8 @@ def create_grid_demography_dataset(
         ploidy,
         allow_multiple_samples_per_deme,
         pop_size,
-        migration_rates
+        migration_rate=None,
+        migration_rates=None
     ):
     """Creates a new dataset based on the specified grid metapopulation demographic model
 
@@ -482,16 +600,26 @@ def create_grid_demography_dataset(
         Whether to allow randomly placing multiple samples into a deme
     pop_size : int
         Population size of each deme
+    migration_rate : int
+        Single migration rate between neighboring demes. (default=None, ignored)
     migration_rates : dict
-        Key is the type of connection and value is the migration rate of that connection type
+        Key is the type of connection and value is the migration rate of that connection type. (default=None, ignored)
     """
+
+    if migration_rate == None and migration_rates == None:
+        raise RuntimeError("Must provide either `migration_rate` or `migration_rates`.")
+    elif migration_rate != None and migration_rates != None:
+        raise RuntimeError("Must provide either `migration_rate` or `migration_rates`, not both.")
+    elif migration_rate != None:
+        transitions = list(combinations_with_replacement([i for i in range(number_of_deme_types)], 2))
+        migration_rates = {i:migration_rate for i in range(len(transitions))}
 
     _create_grid_demes_file(
         side_length=side_length,
         number_of_deme_types=number_of_deme_types,
         output_path="demes.tsv"
     )
-    _create_samples_and_trees_files(
+    create_samples_and_trees_files(
         demes_path="demes.tsv",
         number_of_samples=number_of_samples,
         allow_multiple_samples_per_deme=allow_multiple_samples_per_deme,
@@ -536,4 +664,3 @@ def create_dataset_from_slim_output(ts, side_length, gap_between_trees=1, num_ra
         number_of_deme_types=1,
         output_path="demes.tsv"
     )
-    
