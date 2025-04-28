@@ -22,3 +22,7 @@
 - 20250210
     - `terracotta` with ARGs
     - Junction tree algorithm
+- 20250224
+    - Junction tree algorithm
+- 20250324
+    - MCMC
