@@ -7,9 +7,14 @@ dependencies:
   - jupyterlab
   - numpy
   - tskit
+  - tszip
   - scipy
   - ipywidgets
   - tqdm
   - matplotlib
   - msprime
   - pandas
+  - geopandas
+  - geodatasets
+  - h3pandas
+  - emcee
