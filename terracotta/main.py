@@ -16,7 +16,6 @@ def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0)
     c2=np.array(mpl.colors.to_rgb(c2))
     return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
 
-@njit()
 def logsumexp_custom(x, axis):
     c = np.max(x)
     return c + np.log(np.sum(np.exp(x - c), axis=axis))
@@ -259,43 +258,69 @@ class WorldMap:
         return sample_location_vectors
 
 def convert_tree_to_tuple_list(tree):
-    return ([(tree.children(node), tree.branch_length(node)) for node in tree.nodes(order="timeasc")], tree.root)
+    children = []
+    branch_above = []
+    for node in tree.nodes(order="timeasc"):
+        children.append(np.array(tree.children(node), dtype="int64"))
+        branch_above.append(tree.branch_length(node))
+    return children, np.array(branch_above), tree.roots
 
-def calc_tree_log_likelihood_new(tree_tuple_list, roots, sample_location_vectors, precomputed_transitions=None):
-    num_nodes = len(tree_tuple_list)
-    num_demes = len(sample_location_vectors[0][0])
+@njit(parallel=True)
+def _calc_tree_log_likelihood(
+    child_list,
+    branch_above_list,
+    roots,
+    sample_ids,
+    sample_location_vectors,
+    branch_lengths,
+    precomputed_transitions,
+    precomputed_log
+):
+    num_nodes = len(branch_above_list)
+    num_demes = len(sample_location_vectors[0])
 
     log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
-    for l in sample_location_vectors:
-        bl = tree_tuple_list[l][1]
+    counter = 0
+    for l in sample_ids:
+        bl = branch_above_list[l]
         if bl > 0:
-            log_messages[l] = np.log(np.dot(sample_location_vectors[l], precomputed_transitions[bl]))
-
-    log_mats = {}
-    for trans_mat in precomputed_transitions:
-        log_mats[trans_mat] = np.log(precomputed_transitions[trans_mat]).T
+            bl_index = np.where(branch_lengths==bl)[0][0]
+            log_messages[l] = np.log(np.dot(sample_location_vectors[counter], precomputed_transitions[bl_index]))
+        counter += 1
 
     node_counter = 0
-    for node in tree_tuple_list:
-        if len(node[0]) > 0:
-            incoming_log_messages = np.zeros((len(node[0]), num_demes), dtype="float64")
+    for children in child_list:
+        if len(children) > 0:
+            incoming_log_messages = np.zeros((len(children), num_demes), dtype="float64")
             counter = 0
-            for child in node[0]:
+            for child in children:
                 incoming_log_messages[counter] = log_messages[child]
                 counter += 1
             summed_log_messages = np.sum(incoming_log_messages, axis=0)
-            if node[1] > 0:
-                outgoing_log_message = np.array([logsumexp_custom(log_mats[node[1]] + summed_log_messages, axis=1)])
+            bl = branch_above_list[node_counter]
+            if bl > 0:
+                bl_index = np.where(branch_lengths==bl)[0][0]
+                combined = precomputed_log[bl_index] + summed_log_messages
+                c = np.max(combined)
+                log_sum_exp = c + np.log(np.sum(np.exp(combined - c), axis=1))
+                outgoing_log_message = log_sum_exp#.reshape(1, -1)
             else:
                 outgoing_log_message = summed_log_messages
             log_messages[node_counter] = outgoing_log_message
         node_counter += 1
 
-    root_log_likes = [logsumexp_custom(log_messages[r], axis=0) for r in roots if r not in sample_location_vectors]
+    root_log_likes = np.zeros((len(roots)), dtype="float64")
+    counter = 0
+    for r in roots:
+        if r not in sample_ids:
+            c = np.max(log_messages[r])
+            root_log_likes[counter] = c + np.log(np.sum(np.exp(log_messages[r] - c), axis=0))
+        counter += 1
+    #root_log_likes = [logsumexp_custom(log_messages[r], axis=0) for r in roots if r not in sample_ids]
     tree_likelihood = sum(root_log_likes)
     return tree_likelihood, root_log_likes
 
-def calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix=None, precomputed_transitions=None):
+def calc_tree_log_likelihood_old(tree, sample_location_vectors, transition_matrix=None, precomputed_transitions=None):
     """Calculates the log_likelihood of the tree using Felsenstein's Pruning Algorithm.
 
     NOTE: Assumes that samples are always tips on the tree.
@@ -394,27 +419,43 @@ def calc_migration_rate_log_likelihood(world_map, trees, migration_rates, branch
     start = time.time()
     previous_length = None
     previous_mat = None
-    precomputed_transitions = {}
+    precomputed_transitions = np.zeros((len(branch_lengths), len(world_map.demes), len(world_map.demes)), dtype="float64")
+    precomputed_log = np.zeros((len(branch_lengths), len(world_map.demes), len(world_map.demes)), dtype="float64")
+    counter = 0
     for bl in branch_lengths:
         if previous_length != None:
             diff = bl - previous_length
             where_next = np.dot(previous_mat, np.linalg.matrix_power(exponentiated, diff))
         else:
             where_next = np.linalg.matrix_power(exponentiated, bl)
-        precomputed_transitions[bl] = where_next
-        precomputed_transitions[bl][precomputed_transitions[bl] <= 0] = 1e-99
+        precomputed_transitions[counter] = where_next
+        precomputed_transitions[counter][precomputed_transitions[counter] <= 0] = 1e-99
+        precomputed_log[counter] = np.log(precomputed_transitions[counter]).T
         previous_length = bl
         previous_mat = where_next
-    print(time.time() - start)
+        counter += 1
+
+    sample_location_vectors = np.zeros((len(world_map.sample_location_vectors), len(world_map.demes)), dtype="float64")
+    sample_ids = np.zeros(len(world_map.sample_location_vectors), dtype="int64")
+    counter = 0
+    for sample in world_map.sample_location_vectors:
+        sample_location_vectors[counter] = world_map.sample_location_vectors[sample]
+        sample_ids[counter] = sample
+        counter += 1
 
     #print("Calculating loglikelihoods per tree...")
     log_likelihoods = []
     for tree in trees:
-        roots = tree[1]
-        if type(roots) == int:
-            roots = [roots]
-        start = time.time()
-        log_likelihoods.append(_calc_tree_log_likelihood_new(tree[0], roots, world_map.sample_location_vectors, precomputed_transitions=precomputed_transitions)[0])
+        log_likelihoods.append(_calc_tree_log_likelihood(
+            child_list=child_list,
+            branch_above_list=branch_above_list,
+            roots=roots,
+            sample_ids=sample_ids,
+            sample_location_vectors=sample_location_vectors,
+            branch_lengths=branch_lengths,
+            precomputed_transitions=precomputed_transitions,
+            precomputed_log=precomputed_log
+        )[0])
         print("-", time.time() - start)
     mr_log_like = sum(log_likelihoods)
 
