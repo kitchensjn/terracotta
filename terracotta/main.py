@@ -7,6 +7,7 @@ from scipy.special import logsumexp
 import matplotlib as mpl
 import networkx as nx
 import tskit
+import time
 from numba import njit
 
 
@@ -14,6 +15,11 @@ def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0)
     c1=np.array(mpl.colors.to_rgb(c1))
     c2=np.array(mpl.colors.to_rgb(c2))
     return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+
+@njit()
+def logsumexp_custom(x, axis):
+    c = np.max(x)
+    return c + np.log(np.sum(np.exp(x - c), axis=axis))
 
 class WorldMap:
     """Stores a map of the demes
@@ -251,9 +257,45 @@ class WorldMap:
             sample_loc[0,self.demes.loc[self.demes["id"]==row["deme"]].index[0]] = 1
             sample_location_vectors[row["id"]] = sample_loc
         return sample_location_vectors
-    
-@njit()
-def _calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix=None, precomputed_transitions=None):
+
+def convert_tree_to_tuple_list(tree):
+    return ([(tree.children(node), tree.branch_length(node)) for node in tree.nodes(order="timeasc")], tree.root)
+
+def calc_tree_log_likelihood_new(tree_tuple_list, roots, sample_location_vectors, precomputed_transitions=None):
+    num_nodes = len(tree_tuple_list)
+    num_demes = len(sample_location_vectors[0][0])
+
+    log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
+    for l in sample_location_vectors:
+        bl = tree_tuple_list[l][1]
+        if bl > 0:
+            log_messages[l] = np.log(np.dot(sample_location_vectors[l], precomputed_transitions[bl]))
+
+    log_mats = {}
+    for trans_mat in precomputed_transitions:
+        log_mats[trans_mat] = np.log(precomputed_transitions[trans_mat]).T
+
+    node_counter = 0
+    for node in tree_tuple_list:
+        if len(node[0]) > 0:
+            incoming_log_messages = np.zeros((len(node[0]), num_demes), dtype="float64")
+            counter = 0
+            for child in node[0]:
+                incoming_log_messages[counter] = log_messages[child]
+                counter += 1
+            summed_log_messages = np.sum(incoming_log_messages, axis=0)
+            if node[1] > 0:
+                outgoing_log_message = np.array([logsumexp_custom(log_mats[node[1]] + summed_log_messages, axis=1)])
+            else:
+                outgoing_log_message = summed_log_messages
+            log_messages[node_counter] = outgoing_log_message
+        node_counter += 1
+
+    root_log_likes = [logsumexp_custom(log_messages[r], axis=0) for r in roots if r not in sample_location_vectors]
+    tree_likelihood = sum(root_log_likes)
+    return tree_likelihood, root_log_likes
+
+def calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix=None, precomputed_transitions=None):
     """Calculates the log_likelihood of the tree using Felsenstein's Pruning Algorithm.
 
     NOTE: Assumes that samples are always tips on the tree.
@@ -290,31 +332,149 @@ def _calc_tree_log_likelihood(tree, sample_location_vectors, transition_matrix=N
                         where_next[where_next <= 0] = 1e-99
                     precomputed_transitions[bl] = where_next
    
-    log_messages = {}
+    num_nodes = len(tree.postorder())
+    num_demes = len(sample_location_vectors[0][0])
+
+    log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
     for l in sample_location_vectors:
         bl = tree.branch_length(l)
         if bl > 0:
-            log_messages[l] = np.log(np.matmul(sample_location_vectors[l], precomputed_transitions[bl]))
+            log_messages[l] = np.log(np.dot(sample_location_vectors[l], precomputed_transitions[bl]))
+
+    log_mats = {}
+    for trans_mat in precomputed_transitions:
+        log_mats[trans_mat] = np.log(precomputed_transitions[trans_mat]).T
 
     for node in tree.nodes(order="timeasc"):
         children = tree.children(node)
         if len(children) > 0:
-            incoming_log_messages = []
+            incoming_log_messages = np.zeros((len(children), num_demes), dtype="float64")
+            counter = 0
             for child in children:
-                incoming_log_messages.append(log_messages[child])
+                incoming_log_messages[counter] = log_messages[child]
+                counter += 1
             summed_log_messages = np.sum(incoming_log_messages, axis=0)
             bl = tree.branch_length(node)
             if bl > 0:
-                outgoing_log_message = np.array([logsumexp(np.log(precomputed_transitions[bl]).T + summed_log_messages, axis=1)])
+                outgoing_log_message = np.array([logsumexp_custom(log_mats[bl] + summed_log_messages, axis=1)])
             else:
                 outgoing_log_message = summed_log_messages
             log_messages[node] = outgoing_log_message
+
     roots = tree.roots
-    root_log_likes = [logsumexp(log_messages[r]) for r in roots if r not in sample_location_vectors]
+    root_log_likes = [logsumexp_custom(log_messages[r], axis=0) for r in roots if r not in sample_location_vectors]
     tree_likelihood = sum(root_log_likes)
     return tree_likelihood, root_log_likes
 
-def calc_migration_rate_log_likelihood(world_map, trees, migration_rates):
+def calc_migration_rate_log_likelihood(world_map, trees, migration_rates, branch_lengths):
+    """Calculates the composite log-likelihood of the specified migration rates across trees
+    
+    Loops through all trees and calculates the log-likelihood for each, before summing together.
+
+    Parameters
+    ----------
+    world_map : terracotta.WorldMap
+    trees : list
+        List of tskit.Tree objects
+    migration_rates : dict
+        Keys are the connection type and values are the instantaneous migration
+        rate along that connection
+    branch_lengths : np.array
+
+    Returns
+    -------
+    mr_log_like : float
+        Log-likelihood of the specified migration rates
+    """
+
+    transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
+    exponentiated = linalg.expm(transition_matrix)
+    exponentiated[exponentiated < 0] = 0
+
+    start = time.time()
+    previous_length = None
+    previous_mat = None
+    precomputed_transitions = {}
+    for bl in branch_lengths:
+        if previous_length != None:
+            diff = bl - previous_length
+            where_next = np.dot(previous_mat, np.linalg.matrix_power(exponentiated, diff))
+        else:
+            where_next = np.linalg.matrix_power(exponentiated, bl)
+        precomputed_transitions[bl] = where_next
+        precomputed_transitions[bl][precomputed_transitions[bl] <= 0] = 1e-99
+        previous_length = bl
+        previous_mat = where_next
+    print(time.time() - start)
+
+    #print("Calculating loglikelihoods per tree...")
+    log_likelihoods = []
+    for tree in trees:
+        roots = tree[1]
+        if type(roots) == int:
+            roots = [roots]
+        start = time.time()
+        log_likelihoods.append(_calc_tree_log_likelihood_new(tree[0], roots, world_map.sample_location_vectors, precomputed_transitions=precomputed_transitions)[0])
+        print("-", time.time() - start)
+    mr_log_like = sum(log_likelihoods)
+
+    return mr_log_like, log_likelihoods
+
+def calc_migration_rate_log_likelihood_orig(world_map, trees, migration_rates, branch_lengths):
+    """Calculates the composite log-likelihood of the specified migration rates across trees
+    
+    Loops through all trees and calculates the log-likelihood for each, before summing together.
+
+    Parameters
+    ----------
+    world_map : terracotta.WorldMap
+    trees : list
+        List of tskit.Tree objects
+    migration_rates : dict
+        Keys are the connection type and values are the instantaneous migration
+        rate along that connection
+    branch_lengths : np.array
+
+    Returns
+    -------
+    mr_log_like : float
+        Log-likelihood of the specified migration rates
+    """
+
+    transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
+    exponentiated = linalg.expm(transition_matrix)
+    exponentiated[exponentiated < 0] = 0
+
+    start = time.time()
+    previous_length = None
+    previous_mat = None
+    precomputed_transitions = {}
+    for bl in branch_lengths:
+        if previous_length != None:
+            diff = bl - previous_length
+            where_next = np.dot(previous_mat, np.linalg.matrix_power(exponentiated, diff))
+        else:
+            where_next = np.linalg.matrix_power(exponentiated, bl)
+        precomputed_transitions[bl] = where_next
+        precomputed_transitions[bl][precomputed_transitions[bl] <= 0] = 1e-99
+        previous_length = bl
+        previous_mat = where_next
+    print(time.time() - start)
+
+    #print("Calculating loglikelihoods per tree...")
+    log_likelihoods = []
+    for tree in trees:
+        start = time.time()
+        log_likelihoods.append(_calc_tree_log_likelihood(tree, world_map.sample_location_vectors, precomputed_transitions=precomputed_transitions)[0])
+        print("-", time.time() - start)
+    mr_log_like = sum(log_likelihoods)
+
+    return mr_log_like, log_likelihoods
+
+
+
+
+def calc_migration_rate_log_likelihood_old(world_map, trees, migration_rates):
     """Calculates the composite log-likelihood of the specified migration rates across trees
     
     Loops through all trees and calculates the log-likelihood for each, before summing together.
@@ -337,6 +497,7 @@ def calc_migration_rate_log_likelihood(world_map, trees, migration_rates):
     transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
 
     #print("Precalculating transitions...")
+    start = time.time()
     exponentiated = linalg.expm(transition_matrix)
     exponentiated[exponentiated < 0] = 0
     precomputed_transitions = {}
@@ -347,6 +508,7 @@ def calc_migration_rate_log_likelihood(world_map, trees, migration_rates):
                 where_next = np.linalg.matrix_power(exponentiated, int(bl)) #forces branch lengths to be integer. Could be an issue for bl<1
                 where_next[where_next <= 0] = 1e-99
                 precomputed_transitions[bl] = where_next
+    print(time.time() - start)
 
     #print("Calculating loglikelihoods per tree...")
     log_likelihoods = []
@@ -405,62 +567,6 @@ def locate_nodes_in_tree(tree, world_map, migration_rates):
                 incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
             node_locations[node] = incoming_messages[0]
     return node_locations
-
-    exit()
-
-    log_messages = {}
-    for l in world_map.sample_location_vectors:
-        l = int(l)
-        bl = tree.branch_length(l)
-        if bl > 0:
-            log_messages[(l, tree.parent(l))] = np.log(np.matmul(world_map.sample_location_vectors[l], precomputed_transitions[bl]))
-
-    for node in tree.nodes(order="timeasc"):
-        children = tree.children(node)
-        bl = tree.branch_length(node)
-        if len(children) > 0 and bl > 0:
-            incoming_log_messages = []
-            for child in children:
-                incoming_log_messages.append(log_messages[(child, node)])
-            summed_log_messages = np.sum(incoming_log_messages, axis=0)
-            outgoing_log_message = np.array([logsumexp(np.log(precomputed_transitions[bl]).T + summed_log_messages, axis=1)])
-            log_messages[(node, tree.parent(node))] = outgoing_log_message
-
-    for node in tree.nodes(order="timedesc"):
-        children = tree.children(node)
-        incoming_log_messages = [key for key in log_messages.keys() if key[1] == node]
-        for child in children:
-            bl = tree.branch_length(child)
-            relevant_incoming = []
-            for income in incoming_log_messages:
-                if income[0] != child:
-                    relevant_incoming.append(log_messages[income])
-            if len(relevant_incoming) == 0:
-                print("AHAHHAAH")
-            summed_log_messages = np.sum(relevant_incoming, axis=0)
-            outgoing_log_message = np.array([logsumexp(np.log(precomputed_transitions[bl]).T + summed_log_messages, axis=1)])
-            log_messages[(node, child)] = outgoing_log_message
-    
-    location_vectors = {}
-    for node in tree.nodes(order="timeasc"):
-        if tree.is_sample(node):
-            regular = world_map.sample_location_vectors[node]
-            if np.any(regular <= 0):
-                regular[regular <= 0] = 1e-99
-            location_vectors[node] = np.log(regular)
-        else:
-            incoming_log_messages = np.array([log_messages[key] for key in log_messages.keys() if key[1] == node])
-            summed_log_messages = np.sum(relevant_incoming, axis=0)
-            location_vectors[node] = summed_log_messages
-    return location_vectors
-
-
-    #    parent = tree.parent(node)
-    #    print(parent)
-        #if node not in tree.roots:
-        #    log_messages[(tree.parent(node), node)]
-    #root_log_likes = [logsumexp(log_messages[r]) for r in roots if r not in world_map.sample_location_vectors]
-    #print(root_log_likes)
 
 def ts_to_nx(ts):
     """Covert tskit.TreeSequence to networkx graph
