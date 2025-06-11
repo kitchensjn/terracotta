@@ -18,3 +18,4 @@ dependencies:
   - geodatasets
   - h3pandas
   - emcee
+  - numba

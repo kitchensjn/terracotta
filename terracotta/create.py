@@ -83,9 +83,9 @@ def _simulate_independent_trees(
     """
 
     demography = _set_up_msprime_demography(world_map=world_map, pop_size=pop_size, migration_rates=migration_rates)
-    samples = {}
+    samples = []
     for s in world_map.samples["deme"]:
-        samples["Pop_"+str(s)] = samples.get("Pop_"+str(s), 0) + 1
+        samples.append(msprime.SampleSet(1, population="Pop_"+str(s)))
     for i in range(number_of_trees):
         ts = msprime.sim_ancestry(
             samples=samples,
@@ -101,6 +101,7 @@ def create_trees_files(
         samples_path,
         number_of_trees,
         pop_size,
+        ploidy=1,
         record_provenance=True,
         migration_rate=None,
         migration_rates=None,
@@ -115,6 +116,10 @@ def create_trees_files(
         The number of independent trees to simulate
     pop_size : int
         The population size of each deme
+    ploidy : int
+        The ploidy of the individuals. (default=1, haploid)
+    record_provenance : bool
+        Whether msprime should record the provenance of the trees. (default=True)
     migration_rate : float
         Single migration rate between neighboring demes. (default=None, ignored)
     migration_rates : dict
@@ -122,7 +127,6 @@ def create_trees_files(
     output_directory : string
         Path to directory where file will be written. (default=".")
     """
-    ploidy = 1  # I'm fixing this to only generate haploid samples, see devlog20250423 for explanation
 
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
