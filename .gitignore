@@ -5,9 +5,10 @@ meeting_figures/
 scripts_to_remove/
 __pycache__/
 terracotta/to_delete.py
-devlog/logs/threads.md
+devlog/overview.md
+devlog/threads.md
 slim/
 papers/
 .vscode/
-devlog/logs/20250501/assets/hexagonal_world_map/world_elevation.tif
-devlog/logs/20250501/assets/hexagonal_world_map/ETOPO2v2c_f4.nc
+devlog/20250501/assets/hexagonal_world_map/world_elevation.tif
+devlog/20250501/assets/hexagonal_world_map/ETOPO2v2c_f4.nc
