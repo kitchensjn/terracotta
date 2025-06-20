@@ -32,7 +32,7 @@ world_map = tct.WorldMap(demes, samples)
 trees = [tct.nx_bin_ts(tskit.load(ts).simplify(), [0]+[10**i for i in range(1,10)]).first() for ts in glob(f"trees/*")]
 ```
 
-`trees/` is a preprocessed directory of `.trees` files in the `tskit` format. These files only contain a single tree each. By loading it in this way, you've created a list of `tskit.Trees`.
+`trees/` is a preprocessed directory of `.trees` files in the `tskit` format. These files only contain a single tree each. By loading it in this way, you've created a list of `tskit.Trees` with times discretized.
 
 #### View the world map
 
