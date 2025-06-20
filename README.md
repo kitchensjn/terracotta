@@ -29,7 +29,7 @@ from glob import glob
 demes = pd.read_csv("demes.tsv", sep="\t")
 samples = pd.read_csv("samples.tsv", sep="\t")
 world_map = tct.WorldMap(demes, samples)
-trees = [tskit.load(ts).simplify().first() for ts in glob(f"trees/*")]
+trees = [tct.nx_bin_ts(tskit.load(ts).simplify(), [0]+[10**i for i in range(1,10)]).first() for ts in glob(f"trees/*")]
 ```
 
 `trees/` is a preprocessed directory of `.trees` files in the `tskit` format. These files only contain a single tree each. By loading it in this way, you've created a list of `tskit.Trees`.
@@ -76,7 +76,7 @@ for tree in trees:
 branch_lengths = np.unique(np.array(branch_lengths))
 ```
 
-The following code may take multiple minutes to run: 
+The following code uses a hill-climbing algorithm to identify the most likely migration surface based on the provided trees; this may take multiple minutes to run: 
 
 ```
 from scipy.optimize import minimize

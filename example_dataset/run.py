@@ -11,7 +11,7 @@ from scipy.optimize import minimize
 demes = pd.read_csv("demes.tsv", sep="\t")
 samples = pd.read_csv("samples.tsv", sep="\t")
 world_map = tct.WorldMap(demes, samples)
-trees = [tskit.load(ts).simplify().first() for ts in glob(f"trees/*")]
+trees = [tct.nx_bin_ts(tskit.load(ts).simplify(), [0]+[10**i for i in range(1,10)]).first() for ts in glob(f"trees/*")]
 
 world_map.draw(
     figsize=(15,15),
@@ -19,7 +19,38 @@ world_map.draw(
     show_samples=True
 )
 
-mr = np.array([4.32e-03, 4.95e-02, 0])
+cl = []
+bal = []
+r = []
+for tree in trees:
+    child_list, branch_above_list, roots = tct.convert_tree_to_tuple_list(tree)
+    cl.append(child_list)
+    bal.append(branch_above_list)
+    r.append(roots)
+
+total_number_of_edges = 0
+for tree in trees:
+    total_number_of_edges += tree.num_edges+1
+branch_lengths = np.zeros(total_number_of_edges, dtype="int64")
+edge_counter = 0
+for tree in trees:
+    for node in tree.nodes(order="timeasc"):
+        branch_lengths[edge_counter] = int(tree.branch_length(node))
+        edge_counter += 1
+branch_lengths = np.unique(np.array(branch_lengths))
+
+mr = np.array([2.5e-03, 4e-02, 0])
+
+print(
+    minimize(
+        tct.calc_migration_rate_log_likelihood,
+        mr,
+        method="nelder-mead",
+        bounds=[(0, 1), (0, 1), (0, 1)],
+        args=(world_map, cl, bal, r, branch_lengths)
+    )
+)
+exit()
 
 positions = tct.track_lineage_over_time(
     sample=1500,
