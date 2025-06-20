@@ -206,7 +206,7 @@ def create_samples_file_from_world_builder(
         world_builder_path,
         output_path="samples.tsv"
     ):
-    """Writes the demes file from the output of world builder
+    """Writes the samples file from the output of world builder
 
     File will always be "samples.tsv".
 
