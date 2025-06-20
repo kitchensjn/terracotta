@@ -42,14 +42,14 @@ class WorldMap:
         self.sample_location_vectors = None
         if samples is not None:
             self.sample_location_vectors = self._build_sample_location_vectors()
-        deme_types = self.demes["type"].unique()
-        connection_types = []
-        for i,type0 in enumerate(deme_types):
-            for type1 in deme_types[i:]:
-                if type1 > type0:
-                    connection_types.append((type0, type1))
-                else:
-                    connection_types.append((type1, type0))
+        deme_types = np.sort(self.demes["type"].unique())
+        #connection_types = []
+        #for i,type0 in enumerate(deme_types):
+        #    for type1 in deme_types[i:]:
+        #        if type1 > type0:
+        #            connection_types.append((type0, type1))
+        #        else:
+        #            connection_types.append((type1, type0))
         connections = []
         converted_neighbors = []
         for index,row in demes.iterrows():
@@ -61,9 +61,9 @@ class WorldMap:
                 if row["id"] < neighbor:
                     neighbor_type = self.get_deme_type(neighbor)
                     if neighbor_type > row["type"]:
-                        ct = connection_types.index((row["type"], neighbor_type))
+                        ct = deme_types[neighbor_type]  #connection_types.index((row["type"], neighbor_type))
                     else:
-                        ct = connection_types.index((neighbor_type, row["type"]))
+                        ct = deme_types[row["type"]]  #connection_types.index((neighbor_type, row["type"]))
                     connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             converted_neighbors.append(int_neighbors)
         self.demes["neighbours"] = converted_neighbors
@@ -156,7 +156,7 @@ class WorldMap:
             deme_1 = self.get_coordinates_of_deme(row["deme_1"])
             if migration_rates != None:
                 mr = ((migration_rates[row["type"]]-min_mr)/(max_mr-min_mr))
-                plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=colorFader("blue", "green", mr), linewidth=5)
+                plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], linewidth=5, color=colorFader("brown", "orange", mr))
             elif color_connections:
                 plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=connection_colors[row["type"]], linewidth=5)
             else:
@@ -194,7 +194,7 @@ class WorldMap:
             deme_0 = self.get_coordinates_of_deme(row["deme_0"])
             deme_1 = self.get_coordinates_of_deme(row["deme_1"])
             plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
-        plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[0][self.demes.index], vmin=0)
+        plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[0][self.demes.index], vmin=0, cmap="Oranges")
         if isinstance(self.samples, pd.DataFrame) and show_samples != False:
             if isinstance(show_samples, list):
                 counts = self.samples[self.samples["id"].isin(show_samples)]["deme"].value_counts().reset_index()
@@ -207,7 +207,7 @@ class WorldMap:
         plt.gca().set_aspect("equal")
         plt.axis("off")
         if title != None:
-            plt.title(title)
+            plt.title(title, fontname="Georgia", fontsize=50)
         if save_to != None:
             plt.savefig(save_to)
         plt.show()
@@ -230,7 +230,7 @@ class WorldMap:
         """
 
         transition_matrix = np.zeros((len(self.demes),len(self.demes)))
-        for index,connection in self.connections.iterrows():
+        for _,connection in self.connections.iterrows():
             i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
             i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
             rate = migration_rates[connection["type"]]
@@ -501,6 +501,145 @@ def locate_nodes_in_tree(tree, world_map, migration_rates):
                 incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
             node_locations[node] = incoming_messages[0]
     return node_locations
+
+def _get_messages(tree, world_map, migration_rates):
+    """
+    """
+    
+    transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
+    
+    total_number_of_edges = tree.num_edges+1
+    branch_lengths = np.zeros(total_number_of_edges, dtype="int64")
+    edge_counter = 0
+    for node in tree.nodes(order="timeasc"):
+        branch_lengths[edge_counter] = int(tree.branch_length(node))
+        edge_counter += 1
+    branch_lengths = np.unique(np.array(branch_lengths))
+
+    precomputed_transitions, precomputed_log = precalculate_transitions(
+        branch_lengths=branch_lengths,
+        transition_matrix=transition_matrix
+    )
+
+    messages = {}
+    for node in tree.nodes(order="timeasc"):
+        bl = int(tree.branch_length(node))
+        bl_index = np.where(branch_lengths==bl)[0][0]
+        if tree.is_sample(node):
+            messages[(node, tree.parent(node))] = np.matmul(world_map.sample_location_vectors[node], precomputed_transitions[bl_index])
+        else:
+            children = tree.children(node)
+            incoming_messages = [messages[(child, node)] for child in children]
+            for i in range(1,len(incoming_messages)):
+                incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0]) 
+            messages[(node, tree.parent(node))] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
+    for node in tree.nodes(order="timedesc"):
+        children = tree.children(node)
+        incoming_keys = [key for key in messages.keys() if key[1] == node]
+        for child in children:
+            incoming_messages = []
+            for income in incoming_keys:
+                if income[0] != child:
+                    incoming_messages.append(messages[income])
+            for i in range(1,len(incoming_messages)):
+                incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
+            bl = int(tree.branch_length(child))
+            bl_index = np.where(branch_lengths==bl)[0][0]
+            messages[(node, child)] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
+    return messages
+
+def _ancestors(tree, u):
+    """Find all of the ancestors above a node for a tree
+
+    Taken directly from https://github.com/tskit-dev/tskit/issues/2706
+
+    Parameters
+    ----------
+    tree : tskit.Tree
+    u : int
+        The ID for the node of interest
+
+    Returns
+    -------
+    An iterator over the ancestors of u in this tree
+    """
+
+    u = tree.parent(u)
+    while u != -1:
+         yield u
+         u = tree.parent(u)
+
+def track_lineage_over_time(sample, times, tree, world_map, migration_rates):
+    """
+    """
+
+    ancestors = [sample] + list(_ancestors(tree=tree, u=sample))
+    node_times = []
+    for a in ancestors:
+        node_times.append(tree.time(a))
+    pc_combos = []
+    for t in times:
+        for i,v in enumerate(node_times):
+            if v > t:
+                child = ancestors[i-1]
+                parent = ancestors[i]
+                break
+            elif v == t:
+                child = ancestors[i]
+                parent = ancestors[i]
+                break
+        pc_combos.append((child, parent))
+    messages = _get_messages(tree=tree, world_map=world_map, migration_rates=migration_rates)
+    transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
+    positions = {}
+    for element,node_combo in enumerate(pc_combos):
+        if node_combo[0] == node_combo[1]:
+            if node_combo[0] in world_map.sample_location_vectors:
+                node_pos = world_map.sample_location_vectors[node_combo[0]]
+            else:
+                incoming_keys = [key for key in messages.keys() if key[1] == node_combo[0]]
+                incoming_messages = []
+                for income in incoming_keys:
+                    incoming_messages.append(messages[income])
+                for i in range(1,len(incoming_messages)):
+                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
+                node_pos = incoming_messages[0]
+        else:
+            if node_combo[0] in world_map.sample_location_vectors:
+                child_pos = world_map.sample_location_vectors[node_combo[0]]
+            else:
+                incoming_keys_child = [key for key in messages.keys() if key[1] == node_combo[0]]
+                incoming_messages_child = []
+                for income in incoming_keys_child:
+                    if income[0] != node_combo[1]:
+                        incoming_messages_child.append(messages[income])
+                for i in range(1,len(incoming_messages_child)):
+                    incoming_messages_child[0] = np.multiply(incoming_messages_child[0], incoming_messages_child[i])
+                    incoming_messages_child[0] = incoming_messages_child[0] / np.sum(incoming_messages_child[0])
+                child_pos = incoming_messages_child[0]
+            branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
+            outgoing_child_message = np.matmul(child_pos, np.linalg.matrix_power(linalg.expm(transition_matrix), branch_length_to_child))
+            if node_combo[1] in world_map.sample_location_vectors:
+                parent_pos = world_map.sample_location_vectors[node_combo[1]]
+            else:
+                incoming_keys_parent = [key for key in messages.keys() if key[1] == node_combo[1]]
+                incoming_messages_parent = []
+                for income in incoming_keys_parent:
+                    if income[0] != node_combo[0]:
+                        incoming_messages_parent.append(messages[income])
+                for i in range(1,len(incoming_messages_parent)):
+                    incoming_messages_parent[0] = np.multiply(incoming_messages_parent[0], incoming_messages_parent[i])
+                    incoming_messages_parent[0] = incoming_messages_parent[0] / np.sum(incoming_messages_parent[0])
+                parent_pos = incoming_messages_parent[0]
+            branch_length_to_parent = int(tree.time(node_combo[1]) - times[element])
+            outgoing_parent_message = np.matmul(parent_pos, np.linalg.matrix_power(linalg.expm(transition_matrix), branch_length_to_parent))
+            node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
+            node_pos = node_pos / np.sum(node_pos)
+        positions[times[element]] = node_pos
+    return positions
 
 def ts_to_nx(ts):
     """Covert tskit.TreeSequence to networkx graph
