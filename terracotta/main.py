@@ -43,13 +43,13 @@ class WorldMap:
         if samples is not None:
             self.sample_location_vectors = self._build_sample_location_vectors()
         deme_types = np.sort(self.demes["type"].unique())
-        #connection_types = []
-        #for i,type0 in enumerate(deme_types):
-        #    for type1 in deme_types[i:]:
-        #        if type1 > type0:
-        #            connection_types.append((type0, type1))
-        #        else:
-        #            connection_types.append((type1, type0))
+        connection_types = []
+        for i,type0 in enumerate(deme_types):
+            for type1 in deme_types[i:]:
+                if type1 > type0:
+                    connection_types.append((type0, type1))
+                else:
+                    connection_types.append((type1, type0))
         connections = []
         converted_neighbors = []
         for index,row in demes.iterrows():
@@ -61,9 +61,9 @@ class WorldMap:
                 if row["id"] < neighbor:
                     neighbor_type = self.get_deme_type(neighbor)
                     if neighbor_type > row["type"]:
-                        ct = deme_types[neighbor_type]  #connection_types.index((row["type"], neighbor_type))
+                        ct = connection_types.index((row["type"], neighbor_type))   #deme_types[neighbor_type]
                     else:
-                        ct = deme_types[row["type"]]  #connection_types.index((neighbor_type, row["type"]))
+                        ct = connection_types.index((neighbor_type, row["type"]))   #deme_types[row["type"]]
                     connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             converted_neighbors.append(int_neighbors)
         self.demes["neighbours"] = converted_neighbors
