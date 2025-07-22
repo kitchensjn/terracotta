@@ -9,6 +9,7 @@ import networkx as nx
 import tskit
 import time
 from numba import njit, prange
+from collections import Counter
 
 
 def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0) to c2 (mix=1)
@@ -37,8 +38,8 @@ class WorldMap:
         samples : pandas.DataFrame
         """
 
-        self.demes = demes
-        self.samples = samples
+        self.demes = demes.copy()
+        self.samples = samples.copy()
         self.sample_location_vectors = None
         if samples is not None:
             self.sample_location_vectors = self._build_sample_location_vectors()
@@ -61,9 +62,9 @@ class WorldMap:
                 if row["id"] < neighbor:
                     neighbor_type = self.get_deme_type(neighbor)
                     if neighbor_type > row["type"]:
-                        ct = connection_types.index((row["type"], neighbor_type))   #deme_types[neighbor_type]
+                        ct = deme_types[neighbor_type] #connection_types.index((row["type"], neighbor_type))   #
                     else:
-                        ct = connection_types.index((neighbor_type, row["type"]))   #deme_types[row["type"]]
+                        ct = deme_types[row["type"]] #connection_types.index((neighbor_type, row["type"]))   #
                     connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             converted_neighbors.append(int_neighbors)
         self.demes["neighbours"] = converted_neighbors
@@ -127,17 +128,39 @@ class WorldMap:
     
     get_neighbours_of_deme = get_neighbors_of_deme
 
-    def draw(self, figsize, show_samples=False, color_demes=False, color_connections=False, migration_rates=None, save_to=None):
+    def draw(
+            self,
+            figsize,
+            color_demes=False,
+            color_connections=False,
+            migration_rates=None,
+            title=None,
+            show_samples=False,
+            add_points=None,
+            save_to=None
+        ):
         """Draws the world map
 
         Uses matplotlib.pyplot
 
         Parameters
         ----------
+        figsize : tuple
+            (width, height) of output figure
         color_demes : bool
-            Whether to color the demes based on type
+            Whether to color the demes based on type. Default is False.
         color_connections : bool
-            Whether to color the connections based on type
+            Whether to color the connections based on type. Default is False.
+        migration_rates : np.array
+            Array of migration rates for the connection types. Default is None.
+        title : str
+            Title is added to the top of the map. Default is None.
+        show_samples : bool
+            Whether to add samples to map. Default is False.
+        add_points : list
+            List of demes IDs to add a point to. Useful for no highlighting a deme. Default is None.
+        save_to : str
+            Path to save the map to. Default is None.
         """
 
         plt.figure(figsize=figsize)
@@ -169,23 +192,42 @@ class WorldMap:
             counts = self.samples["deme"].value_counts().reset_index()
             counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
             plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
+        if isinstance(add_points, list):
+            counts = Counter(add_points)
+            counts = pd.DataFrame({"deme":counts.keys(), "count":counts.values()})
+            counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
+            plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
         plt.gca().set_aspect("equal")
         plt.axis("off")
+        if title != None:
+            plt.title(title, fontname="Georgia", fontsize=50)
         if save_to != None:
             plt.savefig(save_to)
         plt.show()
 
-    def draw_estimated_location(self, location_vector, figsize, show_samples=False, save_to=None, title=None):
+    def draw_estimated_location(
+            self,
+            location_vector,
+            figsize,
+            title=None,
+            show_samples=False,
+            add_points=None,
+            save_to=None
+        ):
         """Draws the world map
 
         Uses matplotlib.pyplot
 
         Parameters
         ----------
-        color_demes : bool
-            Whether to color the demes based on type
-        color_connections : bool
-            Whether to color the connections based on type
+        title : str
+            Title is added to the top of the map
+        show_samples : bool
+            Whether to add samples to map
+        add_points : list
+            List of demes IDs to add a point to. Useful for no highlighting a deme
+        save_to : str
+            Path to save the map to
         """
 
         plt.figure(figsize=figsize)
@@ -204,6 +246,11 @@ class WorldMap:
                 counts = self.samples["deme"].value_counts().reset_index()
                 counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
                 plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*50, zorder=3)
+        if isinstance(add_points, list):
+            counts = Counter(add_points)
+            counts = pd.DataFrame({"deme":counts.keys(), "count":counts.values()})
+            counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
+            plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
         plt.gca().set_aspect("equal")
         plt.axis("off")
         if title != None:
@@ -278,6 +325,15 @@ class WorldMap:
             sample_ids[counter] = sample
             counter += 1
         return sample_locations_array, sample_ids
+    
+    def convert_to_networkx_graph(self):
+        G = nx.Graph()
+        G.add_nodes_from(self.demes.id)
+        connections = []
+        for _,row in self.connections.iterrows():
+            connections.append((row["deme_0"], row["deme_1"]))
+        G.add_edges_from(connections)
+        return G
 
 def convert_tree_to_tuple_list(tree):
     """Breaks a tskit.Tree into primitive lists of children, branch_lengths, and root IDs
@@ -523,17 +579,21 @@ def _get_messages(tree, world_map, migration_rates):
 
     messages = {}
     for node in tree.nodes(order="timeasc"):
-        bl = int(tree.branch_length(node))
-        bl_index = np.where(branch_lengths==bl)[0][0]
-        if tree.is_sample(node):
-            messages[(node, tree.parent(node))] = np.matmul(world_map.sample_location_vectors[node], precomputed_transitions[bl_index])
-        else:
-            children = tree.children(node)
-            incoming_messages = [messages[(child, node)] for child in children]
-            for i in range(1,len(incoming_messages)):
-                incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0]) 
-            messages[(node, tree.parent(node))] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
+        if tree.parent(node) != -1:
+            bl = int(tree.branch_length(node))
+            bl_index = np.where(branch_lengths==bl)[0][0]
+            if tree.is_sample(node):
+                messages[(node, tree.parent(node))] = np.matmul(world_map.sample_location_vectors[node], precomputed_transitions[bl_index])
+            else:
+                children = tree.children(node)
+                incoming_messages = [messages[(child, node)] for child in children]
+                if len(incoming_messages) > 0:
+                    for i in range(1,len(incoming_messages)):
+                        incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                        incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0]) 
+                    messages[(node, tree.parent(node))] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
+                else:
+                    messages[(node, tree.parent(node))] = np.ones((1,len(world_map.demes)))
     for node in tree.nodes(order="timedesc"):
         children = tree.children(node)
         incoming_keys = [key for key in messages.keys() if key[1] == node]
@@ -542,12 +602,15 @@ def _get_messages(tree, world_map, migration_rates):
             for income in incoming_keys:
                 if income[0] != child:
                     incoming_messages.append(messages[income])
-            for i in range(1,len(incoming_messages)):
-                incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-            bl = int(tree.branch_length(child))
-            bl_index = np.where(branch_lengths==bl)[0][0]
-            messages[(node, child)] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
+            if len(incoming_messages) > 0:
+                for i in range(1,len(incoming_messages)):
+                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
+                bl = int(tree.branch_length(child))
+                bl_index = np.where(branch_lengths==bl)[0][0]
+                messages[(node, child)] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
+            else:
+                messages[(node, child)] = np.ones((1,len(world_map.demes)))
     return messages
 
 def _ancestors(tree, u):
@@ -616,10 +679,13 @@ def track_lineage_over_time(sample, times, tree, world_map, migration_rates):
                 for income in incoming_keys_child:
                     if income[0] != node_combo[1]:
                         incoming_messages_child.append(messages[income])
-                for i in range(1,len(incoming_messages_child)):
-                    incoming_messages_child[0] = np.multiply(incoming_messages_child[0], incoming_messages_child[i])
-                    incoming_messages_child[0] = incoming_messages_child[0] / np.sum(incoming_messages_child[0])
-                child_pos = incoming_messages_child[0]
+                if len(incoming_keys_child) > 0:
+                    for i in range(1,len(incoming_messages_child)):
+                        incoming_messages_child[0] = np.multiply(incoming_messages_child[0], incoming_messages_child[i])
+                        incoming_messages_child[0] = incoming_messages_child[0] / np.sum(incoming_messages_child[0])
+                    child_pos = incoming_messages_child[0]
+                else:
+                    child_pos = np.ones((1,len(world_map.demes)))
             branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
             outgoing_child_message = np.matmul(child_pos, np.linalg.matrix_power(linalg.expm(transition_matrix), branch_length_to_child))
             if node_combo[1] in world_map.sample_location_vectors:
@@ -630,10 +696,13 @@ def track_lineage_over_time(sample, times, tree, world_map, migration_rates):
                 for income in incoming_keys_parent:
                     if income[0] != node_combo[0]:
                         incoming_messages_parent.append(messages[income])
-                for i in range(1,len(incoming_messages_parent)):
-                    incoming_messages_parent[0] = np.multiply(incoming_messages_parent[0], incoming_messages_parent[i])
-                    incoming_messages_parent[0] = incoming_messages_parent[0] / np.sum(incoming_messages_parent[0])
-                parent_pos = incoming_messages_parent[0]
+                if len(incoming_messages_parent) > 0:
+                    for i in range(1,len(incoming_messages_parent)):
+                        incoming_messages_parent[0] = np.multiply(incoming_messages_parent[0], incoming_messages_parent[i])
+                        incoming_messages_parent[0] = incoming_messages_parent[0] / np.sum(incoming_messages_parent[0])
+                    parent_pos = incoming_messages_parent[0]
+                else:
+                    parent_pos = np.ones((1,len(world_map.demes)))
             branch_length_to_parent = int(tree.time(node_combo[1]) - times[element])
             outgoing_parent_message = np.matmul(parent_pos, np.linalg.matrix_power(linalg.expm(transition_matrix), branch_length_to_parent))
             node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)

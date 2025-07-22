@@ -64,7 +64,6 @@ def _simulate_independent_trees(
         ploidy,
         pop_size,
         migration_rates,
-        record_provenance
     ):
     """Simulates trees under a demographic model set by the world map
 
@@ -91,8 +90,10 @@ def _simulate_independent_trees(
             samples=samples,
             ploidy=ploidy,
             demography=demography,
-            record_full_arg=True,
-            record_provenance=record_provenance
+            record_full_arg=True
+            #record_migrations=True,
+            #additional_nodes=msprime.NodeType.MIGRANT,
+            #coalescing_segments_only=False
         )
         yield ts
 
@@ -102,7 +103,6 @@ def create_trees_files(
         number_of_trees,
         pop_size,
         ploidy=1,
-        record_provenance=True,
         migration_rate=None,
         migration_rates=None,
         output_directory="."
@@ -149,7 +149,6 @@ def create_trees_files(
         ploidy=ploidy,
         pop_size=pop_size,
         migration_rates=migration_rates,
-        record_provenance=record_provenance
     )           
     for i,tree in enumerate(trees):
         tree.dump(f"{output_directory}/trees/{i}.trees")
