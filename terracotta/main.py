@@ -613,7 +613,7 @@ def _get_messages(tree, world_map, migration_rates):
                 messages[(node, child)] = np.ones((1,len(world_map.demes)))
     return messages
 
-def _ancestors(tree, u):
+def ancs(tree, u):
     """Find all of the ancestors above a node for a tree
 
     Taken directly from https://github.com/tskit-dev/tskit/issues/2706
@@ -634,11 +634,37 @@ def _ancestors(tree, u):
          yield u
          u = tree.parent(u)
 
-def track_lineage_over_time(sample, times, tree, world_map, migration_rates):
-    """
+def track_lineage_over_time(
+        sample,
+        times,
+        tree,
+        world_map,
+        migration_rates
+    ):
+    """Estimates the location probability distribution for an ancestral lineage
+
+    Note: this function is very slow and could benefit from revisiting.
+
+    Parameters
+    ----------
+        sample : int
+            sample ID 
+        times : list
+            List of times (in generations before past)
+        tree : tskit.Tree
+            Input tree for a specified location
+        world_map : WorldMap
+            Map including the demes and sample locations
+        migration_rates : np.array
+            Rates of different connection types
+
+    Returns
+    -------
+    positions : dict
+        All of the positions for 
     """
 
-    ancestors = [sample] + list(_ancestors(tree=tree, u=sample))
+    ancestors = [sample] + list(ancs(tree=tree, u=sample))
     node_times = []
     for a in ancestors:
         node_times.append(tree.time(a))
@@ -716,10 +742,12 @@ def ts_to_nx(ts):
     Parameters
     ----------
     ts : tskit.TreeSequence
-    
+        Input tree sequence
+
     Returns
     -------
     networkx.DiGraph
+        Output networkx graph object
     """
     
     edges = []
@@ -733,11 +761,14 @@ def nx_bin_ts(ts, bins):
     Parameters
     ----------
     ts : tskit.TreeSequence
+        Input tree sequence
     bins : list
+        List of time bins to group nodes into
 
     Returns
     -------
     ts_out : tskit.TreeSequence
+        Output tree sequence
     """
 
     nx_ts = ts_to_nx(ts=ts)
@@ -795,119 +826,3 @@ def nx_bin_ts(ts, bins):
     tables.sort()
     ts_out = tables.tree_sequence()
     return ts_out
-
-
-
-
-
-
-def calc_tree_log_likelihood_old(tree, sample_location_vectors, transition_matrix=None, precomputed_transitions=None):
-    """Calculates the log_likelihood of the tree using Felsenstein's Pruning Algorithm.
-
-    NOTE: Assumes that samples are always tips on the tree.
-    NOTE: Ignores samples that are completely detached from the tree(s).
-    NOTE: Parent of sample cannot have the same time as sample.
-
-    Parameters
-    ----------
-    tree : tskit.Tree
-        This is a tree taken from the tskit.TreeSequence.
-    sample_location_vectors : dict
-        Contains all of the location vectors for the samples
-    transition_matrix : np.matrix
-        Instantaneous migration rate matrix between demes
-
-    Returns
-    -------
-    tree_likelihood : float
-        likelihood of the tree (product of the root likelihoods)
-    root_log_likes : list
-        List of root likelihoods (sum of the root locations vector)
-    """
-
-    if precomputed_transitions == None:
-        if transition_matrix == None:
-            raise RuntimeError("Must provide either a transition matrix or precomputed transitions.")
-        else:
-            precomputed_transitions = {}
-            for node in tree.nodes(order="timeasc"):
-                bl = tree.branch_length(node)
-                if bl not in precomputed_transitions:
-                    where_next = linalg.expm(transition_matrix*bl)
-                    if np.any(where_next <= 0):
-                        where_next[where_next <= 0] = 1e-99
-                    precomputed_transitions[bl] = where_next
-   
-    num_nodes = len(tree.postorder())
-    num_demes = len(sample_location_vectors[0][0])
-
-    log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
-    for l in sample_location_vectors:
-        bl = tree.branch_length(l)
-        if bl > 0:
-            log_messages[l] = np.log(np.dot(sample_location_vectors[l], precomputed_transitions[bl]))
-
-    log_mats = {}
-    for trans_mat in precomputed_transitions:
-        log_mats[trans_mat] = np.log(precomputed_transitions[trans_mat]).T
-
-    for node in tree.nodes(order="timeasc"):
-        children = tree.children(node)
-        if len(children) > 0:
-            incoming_log_messages = np.zeros((len(children), num_demes), dtype="float64")
-            counter = 0
-            for child in children:
-                incoming_log_messages[counter] = log_messages[child]
-                counter += 1
-            summed_log_messages = np.sum(incoming_log_messages, axis=0)
-            bl = tree.branch_length(node)
-            if bl > 0:
-                outgoing_log_message = np.array([logsumexp(log_mats[bl] + summed_log_messages, axis=1)])
-            else:
-                outgoing_log_message = summed_log_messages
-            log_messages[node] = outgoing_log_message
-
-    roots = tree.roots
-    root_log_likes = [logsumexp(log_messages[r], axis=0) for r in roots if r not in sample_location_vectors]
-    tree_likelihood = sum(root_log_likes)
-    return tree_likelihood, root_log_likes
-
-def calc_migration_rate_log_likelihood_old(world_map, trees, migration_rates):
-    """Calculates the composite log-likelihood of the specified migration rates across trees
-    
-    Loops through all trees and calculates the log-likelihood for each, before summing together.
-
-    Parameters
-    ----------
-    world_map : terracotta.WorldMap
-    trees : list
-        List of tskit.Tree objects
-    migration_rates : dict
-        Keys are the connection type and values are the instantaneous migration
-        rate along that connection
-
-    Returns
-    -------
-    mr_log_like : float
-        Log-likelihood of the specified migration rates
-    """
-
-    transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
-
-    exponentiated = linalg.expm(transition_matrix)
-    exponentiated[exponentiated < 0] = 0
-    precomputed_transitions = {}
-    for tree in trees:
-        for node in tree.nodes(order="timeasc"):
-            bl = tree.branch_length(node)
-            if bl not in precomputed_transitions:
-                where_next = np.linalg.matrix_power(exponentiated, int(bl)) #forces branch lengths to be integer. Could be an issue for bl<1
-                where_next[where_next <= 0] = 1e-99
-                precomputed_transitions[bl] = where_next
-
-    log_likelihoods = []
-    for tree in trees:
-        log_likelihoods.append(calc_tree_log_likelihood_old(tree, world_map.sample_location_vectors, precomputed_transitions=precomputed_transitions)[0])
-    mr_log_like = sum(log_likelihoods)
-
-    return mr_log_like, log_likelihoods

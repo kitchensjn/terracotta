@@ -330,9 +330,9 @@ def create_arg_file(
     world_map = WorldMap(demes=demes, samples=samples)
 
     demography = _set_up_msprime_demography(world_map=world_map, pop_size=pop_size, migration_rates=migration_rates)
-    samples = {}
+    samples = []
     for s in world_map.samples["deme"]:
-        samples["Pop_"+str(s)] = samples.get("Pop_"+str(s), 0) + 1
+        samples.append(msprime.SampleSet(1, population="Pop_"+str(s)))
     arg = msprime.sim_ancestry(
         samples=samples,
         ploidy=ploidy,
