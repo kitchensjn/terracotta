@@ -8,7 +8,7 @@ import matplotlib as mpl
 import networkx as nx
 import tskit
 import time
-from numba import njit, prange
+from numba import jit, njit, prange
 from collections import Counter
 
 
@@ -327,6 +327,9 @@ class WorldMap:
         return sample_locations_array, sample_ids
     
     def convert_to_networkx_graph(self):
+        """Converts world map to undirected networkx graph
+        """
+
         G = nx.Graph()
         G.add_nodes_from(self.demes.id)
         connections = []
@@ -334,6 +337,31 @@ class WorldMap:
             connections.append((row["deme_0"], row["deme_1"]))
         G.add_edges_from(connections)
         return G
+    
+    def check_if_fully_connected(self, verbose=False):
+        """Checks that all demes are connected and accessible
+
+        This is important if there are coalescence events between nodes in
+        inaccessible demes. Should raise warning for users (or fail).
+
+        Parameters
+        ----------
+        verbose : bool
+            If True and more than one component in graph, prints the nodes in
+            each component
+        """
+
+        nx_graph = self.convert_to_networkx_graph()
+        components = nx.connected_components(nx_graph)
+        if len(components) > 1:
+            if verbose:
+                print("Not all demes are accessible.\nSeparated world map components:")
+                for c in components:
+                    print(c)
+            return False
+        else:
+            return True
+
 
 def convert_tree_to_tuple_list(tree):
     """Breaks a tskit.Tree into primitive lists of children, branch_lengths, and root IDs
@@ -376,6 +404,8 @@ def _calc_tree_log_likelihood(
 
     node_counter = 0
     for children in child_list:
+        #childs = children[np.where(children != -1)[0]]
+        #if len(childs) > 0:
         if sum(children) > 0:
             childs = np.where(children == 1)[0]
             incoming_log_messages = np.zeros((len(childs), num_demes), dtype="float64")
@@ -390,7 +420,7 @@ def _calc_tree_log_likelihood(
                 combined = precomputed_log[bl_index] + summed_log_messages
                 c = np.max(combined)
                 log_sum_exp = c + np.log(np.sum(np.exp(combined - c), axis=1))
-                outgoing_log_message = log_sum_exp#.reshape(1, -1)
+                outgoing_log_message = log_sum_exp
             else:
                 outgoing_log_message = summed_log_messages
             log_messages[node_counter] = outgoing_log_message
@@ -434,6 +464,28 @@ def _parallel_process_trees(
         )[0]
     mr_log_like = sum(log_likelihoods)
     return mr_log_like, log_likelihoods
+
+@njit()
+def precalculate_transitions_eigen(branch_lengths, transition_matrix):
+    num_demes = transition_matrix.shape[0]
+    eigen = np.linalg.eig(transition_matrix)
+    e_values = eigen[0]
+    e_values_exp = np.exp(e_values)
+    S = eigen[1]
+    Sinv = np.linalg.inv(S)
+    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    for i in range(len(branch_lengths)):
+        result = np.dot(np.dot(S, np.diag(np.power(e_values_exp, branch_lengths[i]))), Sinv)
+        precomputed_transitions[i] = result
+    return precomputed_transitions
+
+@jit()
+def precalculate_transitions_numba(branch_lengths, exponentiated):
+    num_demes = exponentiated.shape[0]
+    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    for i in range(len(branch_lengths)):
+        precomputed_transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
+    return precomputed_transitions
 
 def precalculate_transitions(branch_lengths, transition_matrix, fast=True):
     """Calculates the transition probabilities between demes for each branch length
@@ -489,12 +541,54 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, children, bra
         Log-likelihood of the specified migration rates
     """
 
+    start = time.time()
     transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
-    precomputed_transitions, precomputed_log = precalculate_transitions(
+    print(time.time() - start)
+
+    start = time.time()
+    precomputed_transitions = precalculate_transitions_eigen(
         branch_lengths=branch_lengths,
         transition_matrix=transition_matrix
     )
+    precomputed_transitions[np.where(precomputed_transitions < 1e-99)] = 1e-99
+    print(time.time() - start)
+
+    start = time.time()
+    precomputed_transitions = precalculate_transitions_eigen(
+        branch_lengths=branch_lengths,
+        transition_matrix=transition_matrix
+    )
+    precomputed_transitions[np.where(precomputed_transitions < 1e-99)] = 1e-99
+    print(time.time() - start)
+
+    print(precomputed_transitions[0])
+
+    exit()
+
+    start = time.time()
+    precomputed_transitions_2, precomputed_log = precalculate_transitions(
+        branch_lengths=branch_lengths,
+        transition_matrix=transition_matrix
+    )
+    print(time.time() - start)
+
+    start = time.time()
+    precalculate_transitions_numba(
+        branch_lengths=branch_lengths,
+        exponentiated=linalg.expm(transition_matrix)
+    )
+    print(time.time() - start)
+
+    start = time.time()
+    precalculate_transitions_numba(
+        branch_lengths=branch_lengths,
+        exponentiated=linalg.expm(transition_matrix)
+    )
+    print(time.time() - start)
+
+    exit()
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+    start = time.time()
     like, like_list = _parallel_process_trees(
         children=children,
         branch_above=branch_above,
@@ -505,6 +599,7 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, children, bra
         precomputed_transitions=precomputed_transitions,
         precomputed_log=precomputed_log
     )
+    print(time.time() - start)
     print(migration_rates, abs(like), flush=True)
     return abs(like)
 

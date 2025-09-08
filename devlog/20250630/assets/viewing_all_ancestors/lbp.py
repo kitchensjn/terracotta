@@ -188,6 +188,9 @@ class BeliefPropagation():
             if len(incoming_messages_index) > 0:
                 message.update(incoming=[self.messages[im].message for im in incoming_messages_index])
 
+    def dump(self, file_path):
+        pass
+
 
 def simplify_with_recombination(ts, flag_recomb=False, keep_nodes=None):
     """Simplifies a tree sequence while keeping recombination nodes
@@ -386,4 +389,5 @@ plt.yscale("log")
 plt.legend()
 plt.xlabel("Generations In Past")
 plt.ylabel("Probability Of True Location")
+plt.savefig("ancestral_location_probability_with_arg.svg")
 plt.show()
