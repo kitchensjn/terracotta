@@ -14,7 +14,7 @@ conda activate terracotta
 
 ### Quickstart
 
-Within the [example_dataset/](https://github.com/kitchensjn/terracotta/example_dataset/) folder, you can find an example `demes.tsv`, `samples.tsv`, and `trees/` folder which are the necessary inputs for this method. The following code can also be found in [example_dataset/run.py](https://github.com/kitchensjn/terracotta/example_dataset/run.py).
+Within the [example_dataset/](https://github.com/kitchensjn/terracotta/tree/main/example_dataset) folder, you can find an example `demes.tsv`, `samples.tsv`, and `trees/` folder which are the necessary inputs for this method. The following code can also be found in [example_dataset/run.py](https://github.com/kitchensjn/terracotta/tree/main/example_dataset/run.py).
 
 #### Loading the inputs
 
