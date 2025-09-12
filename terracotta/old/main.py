@@ -724,3 +724,86 @@ def nx_bin_ts(ts, bins):
     tables.sort()
     ts_out = tables.tree_sequence()
     return ts_out
+
+
+
+@njit()
+def precalculate_transitions_eigen(branch_lengths, transition_matrix):
+    num_demes = transition_matrix.shape[0]
+    eigen = np.linalg.eig(transition_matrix)
+    e_values = eigen[0]
+    e_values_exp = np.exp(e_values)
+    S = eigen[1]
+    Sinv = np.linalg.inv(S)
+    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    for i in range(len(branch_lengths)):
+        result = np.dot(np.dot(S, np.diag(np.power(e_values_exp, branch_lengths[i]))), Sinv)
+        precomputed_transitions[i] = result
+    return precomputed_transitions
+
+@jit()
+def precalculate_transitions_numba(branch_lengths, exponentiated):
+    num_demes = exponentiated.shape[0]
+    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    for i in range(len(branch_lengths)):
+        precomputed_transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
+    return precomputed_transitions
+
+def precalculate_transitions_old(branch_lengths, transition_matrix, fast=True):
+    """Calculates the transition probabilities between demes for each branch length
+
+    Parameters
+    ----------
+    branch_lengths : np.ndarray
+        Array of branch lengths of increasing size
+    transition_matrix : np.ndarray
+        Instantaneous migration rate matrix, output of WorldMap.build_transition_matrix()
+    fast : bool
+        Speeds up calculation but can aggregate floating point errors for longer times
+    """
+
+    num_demes = transition_matrix.shape[0]
+    exponentiated = linalg.expm(transition_matrix)
+    previous_length = -1
+    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    precomputed_log = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    counter = 0
+    for bl in branch_lengths:
+        if fast and previous_length != -1:
+            diff = bl - previous_length
+            where_next = np.dot(previous_mat, np.linalg.matrix_power(exponentiated, diff))
+        else:
+            where_next = np.linalg.matrix_power(exponentiated, bl)
+        precomputed_transitions[counter] = where_next
+        precomputed_transitions[counter][precomputed_transitions[counter] <= 1e-99] = 1e-99
+        precomputed_log[counter] = np.log(precomputed_transitions[counter]).T
+        previous_length = bl
+        previous_mat = where_next
+        counter += 1
+    return precomputed_transitions, precomputed_log
+
+
+def precalculate_transitions(branch_lengths, transition_matrix):
+    """Calculates the transition probabilities between demes for each branch length
+
+    Parameters
+    ----------
+    branch_lengths : np.ndarray
+        Array of branch lengths of increasing size
+    transition_matrix : np.ndarray
+        Instantaneous migration rate matrix, output of WorldMap.build_transition_matrix()
+    
+    Returns
+    -------
+    transitions : np.ndarray
+    """
+    exponentiated = linalg.expm(transition_matrix)
+    num_demes = exponentiated.shape[0]
+    transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    transitions[0] = np.linalg.matrix_power(exponentiated, branch_lengths[0])
+    for i in range(1, len(branch_lengths)):
+        transitions[i] = np.dot(
+            transitions[i-1],
+            np.linalg.matrix_power(exponentiated, branch_lengths[i] - branch_lengths[i-1])
+        )
+    return transitions

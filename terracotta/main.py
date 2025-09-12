@@ -365,6 +365,16 @@ class WorldMap:
 
 def convert_tree_to_tuple_list(tree):
     """Breaks a tskit.Tree into primitive lists of children, branch_lengths, and root IDs
+
+    Parameters
+    ----------
+    tree : tskit.Tree
+
+    Returns
+    -------
+    children
+    branch_above : np.ndarray
+    roots : np.ndarray
     """
 
     num_nodes = len(tree.postorder())
@@ -376,7 +386,7 @@ def convert_tree_to_tuple_list(tree):
         branch_above.append(tree.branch_length(node))
     return children, np.array(branch_above), np.array(tree.roots)
 
-@njit(fastmath=True)
+@njit()
 def _calc_tree_log_likelihood(
         child_list,
         branch_above_list,
@@ -387,7 +397,23 @@ def _calc_tree_log_likelihood(
         precomputed_transitions,
         precomputed_log
     ):
-    """
+    """Calculates the log-likelihood of a tree
+
+    Parameters
+    ----------
+    child_list
+    branch_above_list
+    roots
+    sample_ids
+    sample_location_vectors
+    branch_lengths
+    precomputed_transitions
+    precomputed_log
+
+    Returns
+    -------
+    tree_likelihood
+    root_log_likes
     """
 
     num_nodes = len(branch_above_list)
@@ -404,8 +430,6 @@ def _calc_tree_log_likelihood(
 
     node_counter = 0
     for children in child_list:
-        #childs = children[np.where(children != -1)[0]]
-        #if len(childs) > 0:
         if sum(children) > 0:
             childs = np.where(children == 1)[0]
             incoming_log_messages = np.zeros((len(childs), num_demes), dtype="float64")
@@ -447,7 +471,23 @@ def _parallel_process_trees(
         precomputed_transitions,
         precomputed_log
     ):
-    """
+    """Calculates and combines the log-likelihood of every tree
+
+    Parameters
+    ----------
+    children
+    branch_above
+    roots
+    sample_ids
+    sample_location_vectors
+    branch_lengths
+    precomputed_transitions
+    precomputed_log
+
+    Returns
+    -------
+    mr_log_like
+    log_likelihoods
     """
 
     log_likelihoods = np.zeros(len(branch_above), dtype="float64")
@@ -465,27 +505,6 @@ def _parallel_process_trees(
     mr_log_like = sum(log_likelihoods)
     return mr_log_like, log_likelihoods
 
-@njit()
-def precalculate_transitions_eigen(branch_lengths, transition_matrix):
-    num_demes = transition_matrix.shape[0]
-    eigen = np.linalg.eig(transition_matrix)
-    e_values = eigen[0]
-    e_values_exp = np.exp(e_values)
-    S = eigen[1]
-    Sinv = np.linalg.inv(S)
-    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
-    for i in range(len(branch_lengths)):
-        result = np.dot(np.dot(S, np.diag(np.power(e_values_exp, branch_lengths[i]))), Sinv)
-        precomputed_transitions[i] = result
-    return precomputed_transitions
-
-@jit()
-def precalculate_transitions_numba(branch_lengths, exponentiated):
-    num_demes = exponentiated.shape[0]
-    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
-    for i in range(len(branch_lengths)):
-        precomputed_transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
-    return precomputed_transitions
 
 def precalculate_transitions(branch_lengths, transition_matrix, fast=True):
     """Calculates the transition probabilities between demes for each branch length
@@ -497,28 +516,34 @@ def precalculate_transitions(branch_lengths, transition_matrix, fast=True):
     transition_matrix : np.ndarray
         Instantaneous migration rate matrix, output of WorldMap.build_transition_matrix()
     fast : bool
-        Speeds up calculation but can aggregate floating point errors for longer times
+        Whether to use the faster but less numerically stable algorithm (default is True)
+    
+    Returns
+    -------
+    transitions : np.ndarray
+        3D array with transitions probabilities for each branch length
     """
-
-    num_demes = transition_matrix.shape[0]
     exponentiated = linalg.expm(transition_matrix)
-    previous_length = -1
-    precomputed_transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
-    precomputed_log = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
-    counter = 0
-    for bl in branch_lengths:
-        if fast and previous_length != -1:
-            diff = bl - previous_length
-            where_next = np.dot(previous_mat, np.linalg.matrix_power(exponentiated, diff))
-        else:
-            where_next = np.linalg.matrix_power(exponentiated, bl)
-        precomputed_transitions[counter] = where_next
-        precomputed_transitions[counter][precomputed_transitions[counter] <= 1e-99] = 1e-99
-        precomputed_log[counter] = np.log(precomputed_transitions[counter]).T
-        previous_length = bl
-        previous_mat = where_next
-        counter += 1
-    return precomputed_transitions, precomputed_log
+    num_demes = exponentiated.shape[0]
+    transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
+    if fast:
+        transitions[0] = np.linalg.matrix_power(exponentiated, branch_lengths[0])
+        for i in range(1, len(branch_lengths)):
+            for j in range(i-1, -1, -1):
+                if branch_lengths[j] > 0:
+                    power = branch_lengths[i] / branch_lengths[j]
+                    if power % 1 == 0:
+                        transitions[i] = np.linalg.matrix_power(transitions[j], int(power))
+                        break
+                else:
+                    transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
+                    break
+                if j == 0:
+                    transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
+        return transitions
+    for i in range(len(branch_lengths)):
+        transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
+    return transitions
 
 def calc_migration_rate_log_likelihood(migration_rates, world_map, children, branch_above, roots, branch_lengths):
     """Calculates the composite log-likelihood of the specified migration rates across trees
@@ -541,54 +566,16 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, children, bra
         Log-likelihood of the specified migration rates
     """
 
-    start = time.time()
     transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
-    print(time.time() - start)
 
-    start = time.time()
-    precomputed_transitions = precalculate_transitions_eigen(
+    precomputed_transitions = precalculate_transitions(
         branch_lengths=branch_lengths,
         transition_matrix=transition_matrix
     )
-    precomputed_transitions[np.where(precomputed_transitions < 1e-99)] = 1e-99
-    print(time.time() - start)
+    precomputed_transitions[precomputed_transitions <= 1e-99] = 1e-99   # ensures that this is important there aren't negatives from numerical instability
+    precomputed_log = np.log(precomputed_transitions)
 
-    start = time.time()
-    precomputed_transitions = precalculate_transitions_eigen(
-        branch_lengths=branch_lengths,
-        transition_matrix=transition_matrix
-    )
-    precomputed_transitions[np.where(precomputed_transitions < 1e-99)] = 1e-99
-    print(time.time() - start)
-
-    print(precomputed_transitions[0])
-
-    exit()
-
-    start = time.time()
-    precomputed_transitions_2, precomputed_log = precalculate_transitions(
-        branch_lengths=branch_lengths,
-        transition_matrix=transition_matrix
-    )
-    print(time.time() - start)
-
-    start = time.time()
-    precalculate_transitions_numba(
-        branch_lengths=branch_lengths,
-        exponentiated=linalg.expm(transition_matrix)
-    )
-    print(time.time() - start)
-
-    start = time.time()
-    precalculate_transitions_numba(
-        branch_lengths=branch_lengths,
-        exponentiated=linalg.expm(transition_matrix)
-    )
-    print(time.time() - start)
-
-    exit()
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
-    start = time.time()
     like, like_list = _parallel_process_trees(
         children=children,
         branch_above=branch_above,
@@ -599,7 +586,6 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, children, bra
         precomputed_transitions=precomputed_transitions,
         precomputed_log=precomputed_log
     )
-    print(time.time() - start)
     print(migration_rates, abs(like), flush=True)
     return abs(like)
 
