@@ -342,3 +342,12 @@ def create_arg_file(
         record_full_arg=True
     )
     arg.dump(output_path)
+
+
+def create_trees_folder_from_ts(ts, output_path=".", gap_between_trees=1):
+    mkdir(f"{output_path}/trees")
+    for i in range(0, ts.num_trees, gap_between_trees):
+        tree = ts.at_index(i)
+        interval = tree.interval
+        single_tree_ts = ts.keep_intervals([interval], simplify=True).trim()
+        single_tree_ts.dump(f"{output_path}/trees/{i}.trees")

@@ -39,9 +39,9 @@ class WorldMap:
         """
 
         self.demes = demes.copy()
-        self.samples = samples.copy()
         self.sample_location_vectors = None
         if samples is not None:
+            self.samples = samples.copy()
             self.sample_location_vectors = self._build_sample_location_vectors()
         deme_types = np.sort(self.demes["type"].unique())
         connection_types = []
@@ -523,6 +523,7 @@ def precalculate_transitions(branch_lengths, transition_matrix, fast=True):
     transitions : np.ndarray
         3D array with transitions probabilities for each branch length
     """
+
     exponentiated = linalg.expm(transition_matrix)
     num_demes = exponentiated.shape[0]
     transitions = np.zeros((len(branch_lengths), num_demes, num_demes), dtype="float64")
@@ -545,6 +546,10 @@ def precalculate_transitions(branch_lengths, transition_matrix, fast=True):
         transitions[i] = np.linalg.matrix_power(exponentiated, branch_lengths[i])
     return transitions
 
+def calc_log_migration_rate_log_likelihood(log_migration_rates, world_map, children, branch_above, roots, branch_lengths):
+    migration_rates = np.exp(log_migration_rates)
+    return calc_migration_rate_log_likelihood(migration_rates, world_map, children, branch_above, roots, branch_lengths)
+
 def calc_migration_rate_log_likelihood(migration_rates, world_map, children, branch_above, roots, branch_lengths):
     """Calculates the composite log-likelihood of the specified migration rates across trees
     
@@ -552,29 +557,26 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, children, bra
 
     Parameters
     ----------
-    world_map : terracotta.WorldMap
-    trees : list
-        List of tskit.Tree objects
-    migration_rates : dict
-        Keys are the connection type and values are the instantaneous migration
-        rate along that connection
-    branch_lengths : np.array
+    migration_rates
+    world_map
+    children
+    branch_above
+    roots
+    branch_lengths
 
     Returns
     -------
     mr_log_like : float
         Log-likelihood of the specified migration rates
     """
-
+    
     transition_matrix = world_map.build_transition_matrix(migration_rates=migration_rates)
-
     precomputed_transitions = precalculate_transitions(
         branch_lengths=branch_lengths,
         transition_matrix=transition_matrix
     )
     precomputed_transitions[precomputed_transitions <= 1e-99] = 1e-99   # ensures that this is important there aren't negatives from numerical instability
     precomputed_log = np.log(precomputed_transitions)
-
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
     like, like_list = _parallel_process_trees(
         children=children,
@@ -653,10 +655,12 @@ def _get_messages(tree, world_map, migration_rates):
         edge_counter += 1
     branch_lengths = np.unique(np.array(branch_lengths))
 
-    precomputed_transitions, precomputed_log = precalculate_transitions(
+    precomputed_transitions = precalculate_transitions(
         branch_lengths=branch_lengths,
         transition_matrix=transition_matrix
     )
+    precomputed_transitions[precomputed_transitions <= 1e-99] = 1e-99   # ensures that this is important there aren't negatives from numerical instability
+    precomputed_log = np.log(precomputed_transitions)
 
     messages = {}
     for node in tree.nodes(order="timeasc"):

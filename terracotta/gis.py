@@ -20,7 +20,10 @@ def tile_shapefile(path_to_shp, resolution, subset=None):
     shp = gpd.read_file(path_to_shp)
     if subset != None:
         for col in subset:
-            shp = shp.loc[shp[col].isin(subset[col])]
+            if col == "index":
+                shp = shp.loc[subset[col]]
+            else:
+                shp = shp.loc[shp[col].isin(subset[col])]
             if len(shp.index) == 0:
                 raise RuntimeError("Subsetting conditions resulted in empty dataframe.")
     shp_h3 = shp.h3.polyfill_resample(resolution).sort_index().reset_index()
