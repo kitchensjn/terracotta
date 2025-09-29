@@ -172,7 +172,7 @@ class WorldMap:
         if color_connections:
             num_connection_types = len(self.connections["type"].unique())
             color_rnd = random.Random()
-            color_rnd.seed(1)
+            #color_rnd.seed(1)
             connection_colors = ["#"+''.join([color_rnd.choice("0123456789ABCDEF") for j in range(6)]) for i in range(num_connection_types)]
         for index,row in self.connections.iterrows():
             deme_0 = self.get_coordinates_of_deme(row["deme_0"])

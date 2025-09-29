@@ -40,3 +40,10 @@
     - Hill-climbing
     - Bug when multiple samples in same deme
     - Preparation for Evolution 2025 presentation
+- 20250630
+    - Maize meeting example
+    - Viewing all histories of a sample
+- 20250801
+    - Outline of algorithm
+    - Improvement to exponentiation algorithm
+    - `tile_shapefile()`
