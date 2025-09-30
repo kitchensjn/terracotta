@@ -10,12 +10,18 @@ import tskit
 import time
 from numba import jit, njit, prange
 from collections import Counter
+import math
 
 
 def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0) to c2 (mix=1)
     c1=np.array(mpl.colors.to_rgb(c1))
     c2=np.array(mpl.colors.to_rgb(c2))
     return mpl.colors.to_hex((1-mix)*c1 + mix*c2)
+
+def _calc_optimal_organization_of_suplots(num_plots):
+    ncols = math.ceil(math.sqrt(num_plots))
+    nrows = math.ceil(num_plots/ncols)
+    return nrows, ncols
 
 class WorldMap:
     """Stores a map of the demes
@@ -39,11 +45,42 @@ class WorldMap:
         """
 
         self.demes = demes.copy()
+
+        converted_neighbors = []
+        for index,row in self.demes.iterrows():
+            neighbors = str(row["neighbours"]).split(",")
+            int_neighbors = []
+            for neighbor in neighbors:
+                neighbor = int(neighbor)
+                int_neighbors.append(neighbor)
+            converted_neighbors.append(int_neighbors)
+        self.demes["neighbours"] = converted_neighbors
+
         self.sample_location_vectors = None
         if samples is not None:
             self.samples = samples.copy()
             self.sample_location_vectors = self._build_sample_location_vectors()
-        deme_types = np.sort(self.demes["type"].unique())
+    
+        epochs = [0]
+        deme_types = []
+        for dt in self.demes["type"]:
+            if ":" in dt:
+                epoch_formatter = dt.replace(",", ":").split(":")
+                for epoch_assignment in epoch_formatter[::2]:
+                    epoch_assignment = int(epoch_assignment)
+                    if epoch_assignment not in epochs:
+                        epochs.append(epoch_assignment)
+                for type_assignment in epoch_formatter[1::2]:
+                    type_assignment = int(type_assignment)
+                    if type_assignment not in deme_types:
+                        deme_types.append(type_assignment)
+            elif int(dt) not in deme_types:
+                deme_types.append(int(dt))
+        self.epochs = np.sort(epochs)
+        deme_types = np.sort(deme_types)
+
+        self.deme_types = deme_types
+
         connection_types = []
         for i,type0 in enumerate(deme_types):
             for type1 in deme_types[i:]:
@@ -51,24 +88,27 @@ class WorldMap:
                     connection_types.append((type0, type1))
                 else:
                     connection_types.append((type1, type0))
+
+        self.connection_types = connection_types
+
         connections = []
-        converted_neighbors = []
-        for index,row in demes.iterrows():
-            neighbors = str(row["neighbours"]).split(",")
-            int_neighbors = []
-            for neighbor in neighbors:
-                neighbor = int(neighbor)
-                int_neighbors.append(neighbor)
-                if row["id"] < neighbor:
-                    neighbor_type = self.get_deme_type(neighbor)
-                    if neighbor_type > row["type"]:
-                        ct = deme_types[neighbor_type] #connection_types.index((row["type"], neighbor_type))   #
-                    else:
-                        ct = deme_types[row["type"]] #connection_types.index((neighbor_type, row["type"]))   #
-                    connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
-            converted_neighbors.append(int_neighbors)
-        self.demes["neighbours"] = converted_neighbors
-        self.connections = pd.DataFrame(connections)
+        for time_period in epochs:
+            epoch_connections = []
+            for index,row in demes.iterrows():
+                row_type = self.get_deme_type_at_time(row["id"], time_period)
+                neighbors = str(row["neighbours"]).split(",")
+                for neighbor in neighbors:
+                    neighbor = int(neighbor)
+                    if row["id"] < neighbor:
+                        neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
+                        if neighbor_type > row_type:
+                            ct = connection_types.index((row_type, neighbor_type))   #deme_types[neighbor_type]
+                        else:
+                            ct = connection_types.index((neighbor_type, row_type))   #deme_types[row_type]
+                        epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
+            epoch_connections = pd.DataFrame(epoch_connections)
+            connections.append(epoch_connections)
+        self.connections = connections
 
     def get_coordinates_of_deme(self, id):
         """Gets x and y coordinates for specified deme
@@ -105,7 +145,44 @@ class WorldMap:
         """
 
         deme_type = self.demes.loc[self.demes["id"]==id,"type"].iloc[0]
+        if ":" not in deme_type:
+            return int(deme_type)
         return deme_type
+    
+    def get_deme_type_at_time(self, id, time):
+        """Gets the type for specified deme
+
+        Wrapper of pandas.DataFrame function. Assumes that deme IDs are unique.
+
+        Parameters
+        ----------
+        id : int
+            ID of deme
+
+        Returns
+        -------
+        deme_type : int
+            Type of deme
+        """
+
+        deme_type = self.demes.loc[self.demes["id"]==id,"type"].iloc[0]
+        if ":" not in deme_type:
+            return int(deme_type)
+        epochs = deme_type.split(",")
+        for t in range(len(epochs)-1):
+            details = epochs[t].split(":")
+            start = int(details[0])
+            end = int(epochs[t+1].split(":")[0])
+            if (time >= start) and (time < end):
+                return int(details[1])
+        return int(epochs[-1].split(":")[1])
+    
+    def get_all_deme_types_at_time(self, time):
+        types_at_time = []
+        for id in self.demes["id"]:
+            types_at_time.append(self.get_deme_type_at_time(id, time))
+        return pd.Series(types_at_time)
+            
 
     def get_neighbors_of_deme(self, id):
         """Gets the neighbors of a deme
@@ -131,14 +208,12 @@ class WorldMap:
     def draw(
             self,
             figsize,
-            color_demes=False,
+            times=None,
             color_connections=False,
-            migration_rates=None,
-            title=None,
-            show_samples=False,
-            add_points=None,
+            color_demes=False,
             save_to=None
         ):
+
         """Draws the world map
 
         Uses matplotlib.pyplot
@@ -151,56 +226,44 @@ class WorldMap:
             Whether to color the demes based on type. Default is False.
         color_connections : bool
             Whether to color the connections based on type. Default is False.
-        migration_rates : np.array
-            Array of migration rates for the connection types. Default is None.
-        title : str
-            Title is added to the top of the map. Default is None.
-        show_samples : bool
-            Whether to add samples to map. Default is False.
-        add_points : list
-            List of demes IDs to add a point to. Useful for no highlighting a deme. Default is None.
         save_to : str
             Path to save the map to. Default is None.
         """
-
-        plt.figure(figsize=figsize)
         
-        if migration_rates != None:
-            mr_values = migration_rates.values()
-            max_mr = max(mr_values)
-            min_mr = min(mr_values)
+        if times is None:
+            times = self.epochs
+        
+        nrows, ncols = _calc_optimal_organization_of_suplots(num_plots=len(times))
+
         if color_connections:
-            num_connection_types = len(self.connections["type"].unique())
+            num_connection_types = len(self.connection_types)
             color_rnd = random.Random()
-            #color_rnd.seed(1)
+            color_rnd.seed(1)
             connection_colors = ["#"+''.join([color_rnd.choice("0123456789ABCDEF") for j in range(6)]) for i in range(num_connection_types)]
-        for index,row in self.connections.iterrows():
-            deme_0 = self.get_coordinates_of_deme(row["deme_0"])
-            deme_1 = self.get_coordinates_of_deme(row["deme_1"])
-            if migration_rates != None:
-                mr = ((migration_rates[row["type"]]-min_mr)/(max_mr-min_mr))
-                plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], linewidth=5, color=colorFader("brown", "orange", mr))
-            elif color_connections:
-                plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=connection_colors[row["type"]], linewidth=5)
-            else:
-                plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
-        if color_demes:
-            plt.scatter(self.demes["xcoord"], self.demes["ycoord"], c=self.demes["type"], zorder=2, s=100)
-        else:
-            plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, color="grey")
-        if isinstance(self.samples, pd.DataFrame) and show_samples:
-            counts = self.samples["deme"].value_counts().reset_index()
-            counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
-            plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
-        if isinstance(add_points, list):
-            counts = Counter(add_points)
-            counts = pd.DataFrame({"deme":counts.keys(), "count":counts.values()})
-            counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
-            plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
-        plt.gca().set_aspect("equal")
-        plt.axis("off")
-        if title != None:
-            plt.title(title, fontname="Georgia", fontsize=50)
+
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+
+        if len(times) == 1:
+            axs = np.array([[axs]])
+        elif nrows == 1:
+            axs = np.array([axs])
+
+        for e in range(nrows*ncols):
+            if e < len(times):
+                for _,row in self.connections[e].iterrows():
+                    deme_0 = self.get_coordinates_of_deme(row["deme_0"])
+                    deme_1 = self.get_coordinates_of_deme(row["deme_1"])
+                    if color_connections:
+                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=connection_colors[row["type"]], linewidth=2)
+                    else:
+                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
+                deme_types_at_time = self.get_all_deme_types_at_time(times[e])
+                if color_demes:
+                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
+                axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia", fontsize=50)
+            axs[e//ncols, e%ncols].set_aspect("equal", 'box')
+            axs[e//ncols, e%ncols].axis("off")
+
         if save_to != None:
             plt.savefig(save_to)
         plt.show()
