@@ -45,6 +45,16 @@ class WorldMap:
         """
 
         self.demes = demes.copy()
+        
+        self.demes["type"] = self.demes["type"].astype(str)
+        
+        formatted_dt = []
+        for dt in self.demes["type"]:
+            if ":" in dt:
+                formatted_dt.append(dt)
+            else:
+                formatted_dt.append(f"0:{dt}")
+        self.demes["type"] = formatted_dt
 
         converted_neighbors = []
         for index,row in self.demes.iterrows():
@@ -64,18 +74,15 @@ class WorldMap:
         epochs = [0]
         deme_types = []
         for dt in self.demes["type"]:
-            if ":" in dt:
-                epoch_formatter = dt.replace(",", ":").split(":")
-                for epoch_assignment in epoch_formatter[::2]:
-                    epoch_assignment = int(epoch_assignment)
-                    if epoch_assignment not in epochs:
-                        epochs.append(epoch_assignment)
-                for type_assignment in epoch_formatter[1::2]:
-                    type_assignment = int(type_assignment)
-                    if type_assignment not in deme_types:
-                        deme_types.append(type_assignment)
-            elif int(dt) not in deme_types:
-                deme_types.append(int(dt))
+            epoch_formatter = dt.replace(",", ":").split(":")
+            for epoch_assignment in epoch_formatter[::2]:
+                epoch_assignment = int(epoch_assignment)
+                if epoch_assignment not in epochs:
+                    epochs.append(epoch_assignment)
+            for type_assignment in epoch_formatter[1::2]:
+                type_assignment = int(type_assignment)
+                if type_assignment not in deme_types:
+                    deme_types.append(type_assignment)
         self.epochs = np.sort(epochs)
         deme_types = np.sort(deme_types)
 
@@ -92,7 +99,7 @@ class WorldMap:
         self.connection_types = connection_types
 
         connections = []
-        for time_period in epochs:
+        for time_period in self.epochs:
             epoch_connections = []
             for index,row in demes.iterrows():
                 row_type = self.get_deme_type_at_time(row["id"], time_period)
@@ -105,6 +112,7 @@ class WorldMap:
                             ct = connection_types.index((row_type, neighbor_type))   #deme_types[neighbor_type]
                         else:
                             ct = connection_types.index((neighbor_type, row_type))   #deme_types[row_type]
+                        #print(row["id"], neighbor, row_type, neighbor_type, ct)
                         epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             epoch_connections = pd.DataFrame(epoch_connections)
             connections.append(epoch_connections)
@@ -128,7 +136,7 @@ class WorldMap:
         coords = (row["xcoord"], row["ycoord"])
         return coords
     
-    def get_deme_type(self, id):
+    def get_deme_type_string(self, id):
         """Gets the type for specified deme
 
         Wrapper of pandas.DataFrame function. Assumes that deme IDs are unique.
@@ -140,13 +148,11 @@ class WorldMap:
 
         Returns
         -------
-        deme_type : int
-            Type of deme
+        deme_type : string
+            Formatted string of deme type(s)
         """
 
         deme_type = self.demes.loc[self.demes["id"]==id,"type"].iloc[0]
-        if ":" not in deme_type:
-            return int(deme_type)
         return deme_type
     
     def get_deme_type_at_time(self, id, time):
@@ -166,8 +172,6 @@ class WorldMap:
         """
 
         deme_type = self.demes.loc[self.demes["id"]==id,"type"].iloc[0]
-        if ":" not in deme_type:
-            return int(deme_type)
         epochs = deme_type.split(",")
         for t in range(len(epochs)-1):
             details = epochs[t].split(":")
@@ -183,7 +187,6 @@ class WorldMap:
             types_at_time.append(self.get_deme_type_at_time(id, time))
         return pd.Series(types_at_time)
             
-
     def get_neighbors_of_deme(self, id):
         """Gets the neighbors of a deme
 

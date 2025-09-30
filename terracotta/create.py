@@ -50,12 +50,23 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rates):
     demography = msprime.Demography()
     for id in world_map.demes["id"]:
         demography.add_population(name="Pop_"+str(id), initial_size=pop_size)
-    for index,connection in world_map.connections.iterrows():
+    for _,connection in world_map.connections[0].iterrows():
         rate = migration_rates.get(connection["type"], -1)
         if rate == -1:
             raise RuntimeError(f"Rate for connection of type '{connection["type"]}' is not provided. Please specify and try again.")
         demography.set_migration_rate("Pop_"+str(connection["deme_0"]), "Pop_"+str(connection["deme_1"]), rate)
-        demography.set_migration_rate("Pop_"+str(connection["deme_1"]), "Pop_"+str(connection["deme_0"]), rate)
+        demography.set_migration_rate("Pop_"+str(connection["deme_1"]), "Pop_"+str(connection["deme_0"]), rate)        
+    current_connection_type = world_map.connections[0]["type"]
+    for epoch in range(1, len(world_map.epochs)):
+        time = world_map.epochs[epoch]
+        for i,connection in world_map.connections[epoch].iterrows():
+            if connection["type"] != current_connection_type[i]:
+                rate = migration_rates.get(connection["type"], -1)
+                if rate == -1:
+                    raise RuntimeError(f"Rate for connection of type '{connection["type"]}' is not provided. Please specify and try again.")
+                demography.add_migration_rate_change(time=time, source="Pop_"+str(connection["deme_0"]), dest="Pop_"+str(connection["deme_1"]), rate=rate)
+                demography.add_migration_rate_change(time=time, source="Pop_"+str(connection["deme_1"]), dest="Pop_"+str(connection["deme_0"]), rate=rate)
+        current_connection_type = world_map.connections[epoch]["type"]
     return demography
 
 def _simulate_independent_trees(
