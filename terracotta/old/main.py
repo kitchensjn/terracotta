@@ -807,3 +807,114 @@ def precalculate_transitions(branch_lengths, transition_matrix):
             np.linalg.matrix_power(exponentiated, branch_lengths[i] - branch_lengths[i-1])
         )
     return transitions
+
+
+def convert_tree_to_tuple_list(tree):
+    """Breaks a tskit.Tree into primitive lists of children, branch_lengths, and root IDs
+
+    Parameters
+    ----------
+    tree : tskit.Tree
+
+    Returns
+    -------
+    children
+    branch_above : np.ndarray
+    roots : np.ndarray
+    """
+
+    num_nodes = len(tree.postorder())
+    children = np.zeros((num_nodes, num_nodes), dtype="int64")
+    branch_above = []
+    for node in tree.nodes(order="timeasc"):
+        for child in tree.children(node):
+            children[node, child] = 1
+        branch_above.append(tree.branch_length(node))
+    return children, np.array(branch_above), np.array(tree.roots)
+
+
+@njit()
+def _calc_tree_log_likelihood_old(
+        parent_list,
+        branch_above_list,
+        roots,
+        sample_ids,
+        sample_location_vectors,
+        branch_lengths,
+        precomputed_transitions,
+        precomputed_log
+    ):
+    """Calculates the log-likelihood of a tree
+
+    Parameters
+    ----------
+    child_list
+    branch_above_list
+    roots
+    sample_ids
+    sample_location_vectors
+    branch_lengths
+    precomputed_transitions
+    precomputed_log
+
+    Returns
+    -------
+    tree_likelihood
+    root_log_likes
+    """
+
+    num_nodes = len(branch_above_list)
+    num_demes = len(sample_location_vectors[0])
+
+    log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
+    counter = 0
+    for l in sample_ids:
+        bl = branch_above_list[l]
+        if bl > 0:
+            bl_index = np.where(branch_lengths==bl)[0][0]
+            log_messages[l] = np.log(np.dot(sample_location_vectors[counter], precomputed_transitions[bl_index]))
+        counter += 1
+
+    node_counter = 0
+    for children in parent_list:
+        if sum(children) > 0:
+            childs = np.where(children == 1)[0]
+            incoming_log_messages = np.zeros((len(childs), num_demes), dtype="float64")
+            counter = 0
+            for child in childs:
+                incoming_log_messages[counter] = log_messages[child]
+                counter += 1
+            summed_log_messages = np.sum(incoming_log_messages, axis=0)
+            bl = branch_above_list[node_counter]
+            if bl > 0:
+                bl_index = np.where(branch_lengths==bl)[0][0]
+                combined = precomputed_log[bl_index] + summed_log_messages
+                c = np.max(combined)
+                log_sum_exp = c + np.log(np.sum(np.exp(combined - c), axis=1))
+                outgoing_log_message = log_sum_exp
+            else:
+                outgoing_log_message = summed_log_messages
+            log_messages[node_counter] = outgoing_log_message
+        node_counter += 1
+
+    root_log_likes = np.zeros((len(roots)), dtype="float64")
+    counter = 0
+    for r in roots:
+        if r not in sample_ids:
+            c = np.max(log_messages[r])
+            root_log_likes[counter] = c + np.log(np.sum(np.exp(log_messages[r] - c), axis=0))
+        counter += 1
+    tree_likelihood = sum(root_log_likes)
+    return tree_likelihood, root_log_likes
+
+
+def precalculate_transitions_old(branch_above, transition_matrices):
+    num_epochs = len(transition_matrices)
+    num_demes = transition_matrices[0].shape[0]
+    exponentiated = np.zeros((num_epochs, num_demes, num_demes), dtype="float64")
+    for m in range(num_epochs):
+        exponentiated[m] = linalg.expm(transition_matrices[m])
+    for tree in branch_above:
+        for n in range(len(tree[0])):
+            tree[:, n]
+    exit()
