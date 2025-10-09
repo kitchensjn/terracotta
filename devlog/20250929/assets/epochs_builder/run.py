@@ -10,10 +10,19 @@ import time
 from glob import glob
 
 
+
+#demes = pd.read_csv("datasets/uninhabitable/demes.tsv", sep="\t")
+#samples = pd.read_csv("datasets/uninhabitable/samples.tsv", sep="\t")
+
+#world_map = tct.WorldMap(demes, samples)
+
+#world_map.build_transition_matrices(migration_rates=[1,2,3,4])
+
+
 res = tct.run(
-    demes_path="datasets/barrier/demes.tsv",
-    samples_path="datasets/barrier/samples.tsv",
-    trees_dir_path="datasets/barrier/trees"
+    demes_path="datasets/asymmetric/demes.tsv",
+    samples_path="datasets/asymmetric/samples.tsv",
+    trees_dir_path="datasets/asymmetric/trees"
 )
 
 print(res)

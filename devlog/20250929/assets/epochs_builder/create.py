@@ -16,14 +16,15 @@ import pandas as pd
 #)
 
 tct.create_trees_files(
-    demes_path="datasets/uninhabitable/demes.tsv",
-    samples_path="datasets/uninhabitable/samples.tsv",
-    number_of_trees=100,
+    demes_path="datasets/asymmetric/demes.tsv",
+    samples_path="datasets/asymmetric/samples.tsv",
+    number_of_trees=1000,
     pop_size=50,
     migration_rates={
         0:0.01,
         1:0.00,
-        2:0.00
+        2:0.01,
+        3:0.01
     },
-    output_directory="datasets/uninhabitable"
+    output_directory="datasets/asymmetric"
 )

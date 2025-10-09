@@ -6,8 +6,8 @@ importlib.reload(tct)
 import pandas as pd
 
 
-demes = pd.read_csv("datasets/uninhabitable/demes.tsv", sep="\t")
+demes = pd.read_csv("datasets/asymmetric/demes.tsv", sep="\t")
 
 world_map = tct.WorldMap(demes)
 
-world_map.draw((7,7), color_demes=True)
+world_map.draw((7,7), color_demes=True, color_connections=True)

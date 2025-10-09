@@ -93,12 +93,13 @@ class WorldMap:
         self.deme_types = deme_types
 
         connection_types = []
-        for i,type0 in enumerate(deme_types):
-            for type1 in deme_types[i:]:
-                if type1 > type0:
-                    connection_types.append((type0, type1))
-                else:
-                    connection_types.append((type1, type0))
+        for type0 in deme_types:
+            for type1 in deme_types:
+                connection_types.append((type0, type1))
+                #if type1 > type0:
+                #    connection_types.append((type0, type1))
+                #else:
+                #    connection_types.append((type1, type0))
 
         self.connection_types = connection_types
 
@@ -110,14 +111,17 @@ class WorldMap:
                 neighbors = str(row["neighbours"]).split(",")
                 for neighbor in neighbors:
                     neighbor = int(neighbor)
-                    if row["id"] < neighbor:
-                        neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
-                        if neighbor_type > row_type:
-                            ct = connection_types.index((row_type, neighbor_type))   #deme_types[neighbor_type]
-                        else:
-                            ct = connection_types.index((neighbor_type, row_type))   #deme_types[row_type]
-                        #print(row["id"], neighbor, row_type, neighbor_type, ct)
-                        epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
+                    neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
+                    ct = connection_types.index((row_type, neighbor_type))
+                    epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
+                    #if row["id"] < neighbor:
+                    #    neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
+                    #    if neighbor_type > row_type:
+                    #        ct = connection_types.index((row_type, neighbor_type))   #deme_types[neighbor_type]
+                    #    else:
+                    #        ct = connection_types.index((neighbor_type, row_type))   #deme_types[row_type]
+                    #    #print(row["id"], neighbor, row_type, neighbor_type, ct)
+                    #    epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             epoch_connections = pd.DataFrame(epoch_connections)
             connections.append(epoch_connections)
         self.connections = connections
@@ -276,13 +280,34 @@ class WorldMap:
                 for _,row in self.connections[e].iterrows():
                     deme_0 = self.get_coordinates_of_deme(row["deme_0"])
                     deme_1 = self.get_coordinates_of_deme(row["deme_1"])
-                    if color_connections:
-                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color=connection_colors[row["type"]], linewidth=2)
+
+                    dx = deme_1[0]-deme_0[0]
+                    dy = deme_1[1]-deme_0[1]
+                    length_of_line = math.sqrt(dx**2 + dy**2)
+                    angle_rad = math.atan2(dy, dx)
+                    shift_along_x = math.cos(angle_rad) * (length_of_line*0.2)
+                    shift_along_y = math.sin(angle_rad) * (length_of_line*0.2)
+                    angle_deg = math.degrees(angle_rad)
+                    perp_angle_rad = math.atan2(-dx, dy)
+                    shift_perp_x = math.cos(perp_angle_rad) * 0.1
+                    shift_perp_y = math.sin(perp_angle_rad) * 0.1
+                    if (angle_deg >= 0) and (angle_deg < 180):
+                        x = deme_0[0] + shift_along_x + shift_perp_x
+                        y = deme_0[1] + shift_along_y + shift_perp_y
                     else:
-                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
+                        x = deme_0[0] + shift_along_x + shift_perp_x
+                        y = deme_0[1] + shift_along_y + shift_perp_y
+
+                    if color_connections:
+                        color = connection_colors[row["type"]]
+                    else:
+                        color="grey"
+                    axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
                 deme_types_at_time = self.get_all_deme_types_at_time(times[e])
                 if color_demes:
                     axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
+                else:
+                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], color="grey", zorder=2)
                 axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
             axs[e//ncols, e%ncols].set_aspect("equal", 'box')
             axs[e//ncols, e%ncols].axis("off")
@@ -348,6 +373,8 @@ class WorldMap:
     def build_transition_matrices(self, migration_rates):
         """Builds the transition matrix based on the world map and migration rates
 
+        row is the starting location, column is the next location
+
         Parameters
         ----------
         migration_rates : np.array or list
@@ -369,7 +396,6 @@ class WorldMap:
                 i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
                 rate = migration_rates[connection["type"]]
                 transition_matrix[e, i_0, i_1] = rate
-                transition_matrix[e, i_1, i_0] = rate
             diag = -np.sum(transition_matrix[e], axis=1)
             np.fill_diagonal(transition_matrix[e], diag)
         return transition_matrix
@@ -613,6 +639,7 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
 
 def calc_log_migration_rate_log_likelihood(log_migration_rates, world_map, parents, branch_above, roots, branch_lengths):
     migration_rates = np.exp(log_migration_rates)
+    print("sf", flush=True)
     return calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, roots, branch_lengths)
 
 def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, roots, branch_lengths):
@@ -635,12 +662,19 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, bran
         Log-likelihood of the specified migration rates
     """
     
+
+    print("ye", flush=True)
+
     transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    print("yes", flush=True)
 
     precomputed_transitions = precalculate_transitions(
         branch_lengths=branch_lengths,
         transition_matrices=transition_matrices
     )
+
+    print("no", flush=True)
     
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
     like, like_list = _parallel_process_trees(
@@ -809,9 +843,13 @@ def run(
         trees.append(tree.first())
     pl, bal, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs)  # needed to use numba
 
+    print(pl)
+
+    bounds = [(-20, 7) for rate in world_map.connection_types]
+
     res = shgo(
         calc_log_migration_rate_log_likelihood,
-        bounds=[(-20, 7), (-20, 7), (-20, 7)],
+        bounds=bounds,
         n=100,
         iters=5,
         sampling_method="sobol",

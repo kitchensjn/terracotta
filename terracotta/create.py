@@ -55,7 +55,7 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rates):
         if rate == -1:
             raise RuntimeError(f"Rate for connection of type '{connection["type"]}' is not provided. Please specify and try again.")
         demography.set_migration_rate("Pop_"+str(connection["deme_0"]), "Pop_"+str(connection["deme_1"]), rate)
-        demography.set_migration_rate("Pop_"+str(connection["deme_1"]), "Pop_"+str(connection["deme_0"]), rate)        
+        #demography.set_migration_rate("Pop_"+str(connection["deme_1"]), "Pop_"+str(connection["deme_0"]), rate)        
     current_connection_type = world_map.connections[0]["type"]
     for epoch in range(1, len(world_map.epochs)):
         time = world_map.epochs[epoch]
@@ -65,7 +65,7 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rates):
                 if rate == -1:
                     raise RuntimeError(f"Rate for connection of type '{connection["type"]}' is not provided. Please specify and try again.")
                 demography.add_migration_rate_change(time=time, source="Pop_"+str(connection["deme_0"]), dest="Pop_"+str(connection["deme_1"]), rate=rate)
-                demography.add_migration_rate_change(time=time, source="Pop_"+str(connection["deme_1"]), dest="Pop_"+str(connection["deme_0"]), rate=rate)
+                #demography.add_migration_rate_change(time=time, source="Pop_"+str(connection["deme_1"]), dest="Pop_"+str(connection["deme_0"]), rate=rate)
         current_connection_type = world_map.connections[epoch]["type"]
     return demography
 
@@ -141,17 +141,14 @@ def create_trees_files(
 
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes=demes, samples=samples)
 
     if migration_rate == None and migration_rates == None:
         raise RuntimeError("Must provide either `migration_rate` or `migration_rates`.")
     elif migration_rate != None and migration_rates != None:
         raise RuntimeError("Must provide either `migration_rate` or `migration_rates`, not both.")
     elif migration_rate != None:
-        deme_types = demes["type"].unique()
-        transitions = list(combinations_with_replacement(deme_types, 2))
-        migration_rates = {i:migration_rate for i in range(len(transitions))}
-
-    world_map = WorldMap(demes=demes, samples=samples)
+        migration_rates = {i:migration_rate for i in range(len(world_map.connection_types))}
 
     mkdir(f"{output_directory}/trees")
     trees = _simulate_independent_trees(
