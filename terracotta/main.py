@@ -11,6 +11,7 @@ from collections import Counter
 import math
 from scipy.optimize import shgo
 from glob import glob
+import sys
 
 
 def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0) to c2 (mix=1)
@@ -37,7 +38,7 @@ class WorldMap:
         All possible connection types, even if not observed in the map
     """
 
-    def __init__(self, demes, samples=None):
+    def __init__(self, demes, samples=None, asymmetric=False):
         """Initializes the WorldMap object
 
         Parameters
@@ -70,10 +71,10 @@ class WorldMap:
             converted_neighbors.append(int_neighbors)
         self.demes["neighbours"] = converted_neighbors
 
-        self.sample_location_vectors = None
+        self.sample_location_array = None
         if samples is not None:
             self.samples = samples.copy()
-            self.sample_location_vectors = self._build_sample_location_vectors()
+            self.sample_location_array = self._build_sample_locations_array()
     
         epochs = [0]
         deme_types = []
@@ -92,17 +93,21 @@ class WorldMap:
 
         self.deme_types = deme_types
 
+        self.asymmetric = asymmetric
+        
         connection_types = []
-        for type0 in deme_types:
-            for type1 in deme_types:
-                connection_types.append((type0, type1))
-                #if type1 > type0:
-                #    connection_types.append((type0, type1))
-                #else:
-                #    connection_types.append((type1, type0))
+        if self.asymmetric:
+            for type0 in deme_types:
+                for type1 in deme_types:
+                    connection_types.append((type0, type1))
+        else:
+            for i,type0 in enumerate(deme_types):
+                for type1 in deme_types[i:]:
+                    connection_types.append((type0, type1))
 
-        self.connection_types = connection_types
+        self.all_connection_types = np.array(connection_types)
 
+        existing_connections = []
         connections = []
         for time_period in self.epochs:
             epoch_connections = []
@@ -112,19 +117,19 @@ class WorldMap:
                 for neighbor in neighbors:
                     neighbor = int(neighbor)
                     neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
-                    ct = connection_types.index((row_type, neighbor_type))
+                    if self.asymmetric:
+                        ct = connection_types.index((row_type, neighbor_type))
+                    else:
+                        if (row_type > neighbor_type):
+                            ct = connection_types.index((neighbor_type, row_type))
+                        else:
+                            ct = connection_types.index((row_type, neighbor_type))
+                    existing_connections.append(ct)
                     epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
-                    #if row["id"] < neighbor:
-                    #    neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
-                    #    if neighbor_type > row_type:
-                    #        ct = connection_types.index((row_type, neighbor_type))   #deme_types[neighbor_type]
-                    #    else:
-                    #        ct = connection_types.index((neighbor_type, row_type))   #deme_types[row_type]
-                    #    #print(row["id"], neighbor, row_type, neighbor_type, ct)
-                    #    epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             epoch_connections = pd.DataFrame(epoch_connections)
             connections.append(epoch_connections)
         self.connections = connections
+        self.existing_connection_types = np.unique(np.array(existing_connections))
 
     def get_coordinates_of_deme(self, id):
         """Gets x and y coordinates for specified deme
@@ -235,10 +240,11 @@ class WorldMap:
     def draw(
             self,
             figsize,
-            times=None,
             color_connections=False,
             color_demes=False,
-            save_to=None
+            save_to=None,
+            location_vector=None,
+            show=True
         ):
 
         """Draws the world map
@@ -256,14 +262,16 @@ class WorldMap:
         save_to : str
             Path to save the map to. Default is None.
         """
-        
-        if times is None:
-            times = self.epochs
-        
-        nrows, ncols = _calc_optimal_organization_of_suplots(num_plots=len(times))
 
+        if location_vector is None:
+            times = self.epochs
+            nrows, ncols = _calc_optimal_organization_of_suplots(num_plots=len(times))
+        else:
+            times = [0]
+            nrows, ncols = 1, 1
+            
         if color_connections:
-            num_connection_types = len(self.connection_types)
+            num_connection_types = len(self.existing_connection_types)
             color_rnd = random.Random()
             color_rnd.seed(1)
             connection_colors = ["#"+''.join([color_rnd.choice("0123456789ABCDEF") for j in range(6)]) for i in range(num_connection_types)]
@@ -281,94 +289,47 @@ class WorldMap:
                     deme_0 = self.get_coordinates_of_deme(row["deme_0"])
                     deme_1 = self.get_coordinates_of_deme(row["deme_1"])
 
-                    dx = deme_1[0]-deme_0[0]
-                    dy = deme_1[1]-deme_0[1]
-                    length_of_line = math.sqrt(dx**2 + dy**2)
-                    angle_rad = math.atan2(dy, dx)
-                    shift_along_x = math.cos(angle_rad) * (length_of_line*0.2)
-                    shift_along_y = math.sin(angle_rad) * (length_of_line*0.2)
-                    angle_deg = math.degrees(angle_rad)
-                    perp_angle_rad = math.atan2(-dx, dy)
-                    shift_perp_x = math.cos(perp_angle_rad) * 0.1
-                    shift_perp_y = math.sin(perp_angle_rad) * 0.1
-                    if (angle_deg >= 0) and (angle_deg < 180):
-                        x = deme_0[0] + shift_along_x + shift_perp_x
-                        y = deme_0[1] + shift_along_y + shift_perp_y
-                    else:
-                        x = deme_0[0] + shift_along_x + shift_perp_x
-                        y = deme_0[1] + shift_along_y + shift_perp_y
+                    if self.asymmetric:
+                        dx = deme_1[0]-deme_0[0]
+                        dy = deme_1[1]-deme_0[1]
+                        length_of_line = math.sqrt(dx**2 + dy**2)
+                        angle_rad = math.atan2(dy, dx)
+                        shift_along_x = math.cos(angle_rad) * (length_of_line*0.2)
+                        shift_along_y = math.sin(angle_rad) * (length_of_line*0.2)
+                        angle_deg = math.degrees(angle_rad)
+                        perp_angle_rad = math.atan2(-dx, dy)
+                        shift_perp_x = math.cos(perp_angle_rad) * 0.1
+                        shift_perp_y = math.sin(perp_angle_rad) * 0.1
+                        if (angle_deg >= 0) and (angle_deg < 180):
+                            x = deme_0[0] + shift_along_x + shift_perp_x
+                            y = deme_0[1] + shift_along_y + shift_perp_y
+                        else:
+                            x = deme_0[0] + shift_along_x + shift_perp_x
+                            y = deme_0[1] + shift_along_y + shift_perp_y
 
-                    if color_connections:
-                        color = connection_colors[row["type"]]
+                        if color_connections:
+                            color = connection_colors[np.where(self.existing_connection_types==row["type"])[0][0]]
+                        else:
+                            color="grey"
+                        axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
                     else:
-                        color="grey"
-                    axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
-                deme_types_at_time = self.get_all_deme_types_at_time(times[e])
-                if color_demes:
-                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
-                else:
-                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], color="grey", zorder=2)
+                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
+                if location_vector is not None:
+                    plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=500, marker="s")
+                #if color_demes:
+                #    deme_types_at_time = self.get_all_deme_types_at_time(times[e])
+                #    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
+                #else:
+                #    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], color="grey", zorder=2)
                 axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
             axs[e//ncols, e%ncols].set_aspect("equal", 'box')
             axs[e//ncols, e%ncols].axis("off")
 
         if save_to != None:
             plt.savefig(save_to)
-        plt.show()
+        if show:
+            plt.show()
 
-    def draw_estimated_location(
-            self,
-            location_vector,
-            figsize,
-            title=None,
-            show_samples=False,
-            add_points=None,
-            save_to=None
-        ):
-        """Draws the world map
-
-        Uses matplotlib.pyplot
-
-        Parameters
-        ----------
-        title : str
-            Title is added to the top of the map
-        show_samples : bool
-            Whether to add samples to map
-        add_points : list
-            List of demes IDs to add a point to. Useful for no highlighting a deme
-        save_to : str
-            Path to save the map to
-        """
-
-        plt.figure(figsize=figsize)
-        
-        for index,row in self.connections.iterrows():
-            deme_0 = self.get_coordinates_of_deme(row["deme_0"])
-            deme_1 = self.get_coordinates_of_deme(row["deme_1"])
-            plt.plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
-        plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[0][self.demes.index], vmin=0, cmap="Oranges")
-        if isinstance(self.samples, pd.DataFrame) and show_samples != False:
-            if isinstance(show_samples, list):
-                counts = self.samples[self.samples["id"].isin(show_samples)]["deme"].value_counts().reset_index()
-                counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
-                plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*50, zorder=3)
-            else:
-                counts = self.samples["deme"].value_counts().reset_index()
-                counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
-                plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*50, zorder=3)
-        if isinstance(add_points, list):
-            counts = Counter(add_points)
-            counts = pd.DataFrame({"deme":counts.keys(), "count":counts.values()})
-            counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
-            plt.scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
-        plt.gca().set_aspect("equal")
-        plt.axis("off")
-        if title != None:
-            plt.title(title, fontname="Georgia", fontsize=50)
-        if save_to != None:
-            plt.savefig(save_to)
-        plt.show()
 
     def build_transition_matrices(self, migration_rates):
         """Builds the transition matrix based on the world map and migration rates
@@ -394,27 +355,11 @@ class WorldMap:
             for _,connection in self.connections[e].iterrows():
                 i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
                 i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
-                rate = migration_rates[connection["type"]]
+                rate = migration_rates[np.where(self.existing_connection_types==connection["type"])[0][0]]
                 transition_matrix[e, i_0, i_1] = rate
             diag = -np.sum(transition_matrix[e], axis=1)
             np.fill_diagonal(transition_matrix[e], diag)
         return transition_matrix
-
-    def _build_sample_location_vectors(self):
-        """Builds sample location vectors based on the ordering of demes in the world map
-
-        Returns
-        -------
-        sample_location_vectors : dict
-        """
-
-        zeros = np.zeros((1,len(self.demes)))
-        sample_location_vectors = {}
-        for index,row in self.samples.iterrows():
-            sample_loc = zeros.copy()
-            sample_loc[0,self.demes.loc[self.demes["id"]==row["deme"]].index[0]] = 1
-            sample_location_vectors[row["id"]] = sample_loc
-        return sample_location_vectors
     
     def _build_sample_locations_array(self):
         """
@@ -425,15 +370,12 @@ class WorldMap:
         sample_ids
         """
 
-        if (self.samples is None) or (len(self.sample_location_vectors) == 0):
+        if (self.samples is None):
             raise RuntimeError("No samples provided. Check that you've added samples to your WorldMap.")
         sample_locations_array = np.zeros((len(self.samples), len(self.demes)), dtype="float64")
-        sample_ids = np.zeros(len(self.samples), dtype="int64")
-        counter = 0
-        for sample in self.sample_location_vectors:
-            sample_locations_array[counter] = self.sample_location_vectors[sample]
-            sample_ids[counter] = sample
-            counter += 1
+        sample_ids = np.array(self.samples["id"])
+        for i, sample in self.samples.iterrows():
+            sample_locations_array[i,self.demes.loc[self.demes["id"]==sample["deme"]].index[0]] = 1
         return sample_locations_array, sample_ids
     
     def convert_to_networkx_graph(self):
@@ -476,11 +418,12 @@ class WorldMap:
 def _calc_tree_log_likelihood(
         parent_list,
         branch_above_list,
+        time_bin_widths,
         roots,
         sample_ids,
-        sample_location_vectors,
+        sample_locations_array,
         branch_lengths,
-        precomputed_transitions,
+        precomputed_transitions
     ):
     """Calculates the log-likelihood of a tree
 
@@ -490,7 +433,7 @@ def _calc_tree_log_likelihood(
     branch_above_list
     roots
     sample_ids
-    sample_location_vectors
+    sample_locations_array
     branch_lengths
     precomputed_transitions
     precomputed_log
@@ -502,7 +445,7 @@ def _calc_tree_log_likelihood(
     """
     
     num_nodes = len(branch_above_list[0])
-    num_demes = len(sample_location_vectors[0])
+    num_demes = len(sample_locations_array[0])
 
     log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
 
@@ -515,7 +458,7 @@ def _calc_tree_log_likelihood(
             for epoch in included_epochs:
                 bl_index = np.where(branch_lengths[epoch]==bl[epoch])[0][0]
                 transition_prob = np.dot(transition_prob, precomputed_transitions[epoch][bl_index])
-            log_messages[i] = np.log(np.dot(sample_location_vectors[counter], transition_prob))
+            log_messages[i] = np.log(np.dot(sample_locations_array[counter], transition_prob))
     
     for i in range(num_nodes):
         children_of_i = np.where(parent_list==i)[0]
@@ -537,7 +480,7 @@ def _calc_tree_log_likelihood(
                 combined = summed_log_messages + transition_prob_log
                 c = np.max(combined)
                 log_sum_exp = c + np.log(np.sum(np.exp(combined - c), axis=1))
-                outgoing_log_message = log_sum_exp
+                outgoing_log_message = log_sum_exp + np.log(time_bin_widths[i])
             else:
                 outgoing_log_message = summed_log_messages
             log_messages[i] = outgoing_log_message
@@ -555,9 +498,10 @@ def _calc_tree_log_likelihood(
 def _parallel_process_trees(
         parents,
         branch_above,
+        time_bin_widths,
         roots,
         sample_ids,
-        sample_location_vectors,
+        sample_locations_array,
         branch_lengths,
         precomputed_transitions
     ):
@@ -569,7 +513,7 @@ def _parallel_process_trees(
     branch_above
     roots
     sample_ids
-    sample_location_vectors
+    sample_locations_array
     branch_lengths
     precomputed_transitions
     precomputed_log
@@ -585,11 +529,12 @@ def _parallel_process_trees(
         log_likelihoods[i] = _calc_tree_log_likelihood(
             parent_list=parents[i],
             branch_above_list=branch_above[i],
+            time_bin_widths=time_bin_widths[i],
             roots=roots[i],
             sample_ids=sample_ids,
-            sample_location_vectors=sample_location_vectors,
+            sample_locations_array=sample_locations_array,
             branch_lengths=branch_lengths,
-            precomputed_transitions=precomputed_transitions
+            precomputed_transitions=precomputed_transitions,
         )[0]
     mr_log_like = sum(log_likelihoods)
     return mr_log_like, log_likelihoods
@@ -637,12 +582,11 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
         all_transitions.append(transitions)
     return all_transitions
 
-def calc_log_migration_rate_log_likelihood(log_migration_rates, world_map, parents, branch_above, roots, branch_lengths):
+def calc_log_migration_rate_log_likelihood(log_migration_rates, world_map, parents, branch_above, time_bin_widths, roots, branch_lengths, output_file=None):
     migration_rates = np.exp(log_migration_rates)
-    print("sf", flush=True)
-    return calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, roots, branch_lengths)
+    return calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, time_bin_widths, roots, branch_lengths, output_file=None)
 
-def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, roots, branch_lengths):
+def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, time_bin_widths, roots, branch_lengths, output_file=None):
     """Calculates the composite log-likelihood of the specified migration rates across trees
     
     Loops through all trees and calculates the log-likelihood for each, before summing together.
@@ -661,35 +605,60 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, bran
     mr_log_like : float
         Log-likelihood of the specified migration rates
     """
-    
-
-    print("ye", flush=True)
 
     transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
-
-    print("yes", flush=True)
 
     precomputed_transitions = precalculate_transitions(
         branch_lengths=branch_lengths,
         transition_matrices=transition_matrices
     )
 
-    print("no", flush=True)
-    
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
     like, like_list = _parallel_process_trees(
         parents=parents,
         branch_above=branch_above,
+        time_bin_widths=time_bin_widths,
         roots=roots,
         sample_ids=sample_ids,
-        sample_location_vectors=sample_locations_array,
+        sample_locations_array=sample_locations_array,
         branch_lengths=branch_lengths,
         precomputed_transitions=precomputed_transitions
     )
-    print(migration_rates, abs(like), flush=True)
+    if output_file is not None:
+        print(migration_rates, abs(like), file=f)
+    else:
+        print(migration_rates, abs(like), flush=True)
     return abs(like)
 
-def _deconstruct_trees(trees, epochs):
+def _deconstruct_tree(tree, epochs, time_bins=None):
+    num_nodes = len(tree.postorder())
+    parents = np.full(num_nodes, -1, dtype="int64")
+    branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
+    time_bin_widths = np.full(num_nodes, -1, dtype="int64")
+    for node in tree.nodes(order="timeasc"):
+        node_time = tree.time(node)
+        parent = tree.parent(node)
+        if parent != -1:
+            parent_time = tree.time(parent)
+            starting_epoch = np.digitize(node_time, epochs)-1
+            ending_epoch = np.digitize(parent_time, epochs)-1
+            if starting_epoch == ending_epoch:
+                branch_above[starting_epoch, node] = parent_time - node_time
+            else:
+                branch_above[starting_epoch, node] = epochs[starting_epoch+1] - node_time
+                for e in range(starting_epoch+1, ending_epoch):
+                    branch_above[e, node] = epochs[e+1] - epochs[e]
+                branch_above[ending_epoch, node] = parent_time - epochs[ending_epoch]
+        parents[node] = parent
+        if time_bins is not None:
+            i = next(j for j, e in enumerate(time_bins) if e >= node_time)
+            width = max(1, time_bins[i] - time_bins[i - 1])
+            time_bin_widths[node] = width
+        else:
+            time_bin_widths[node] = 1
+    return parents, branch_above, time_bin_widths
+
+def _deconstruct_trees(trees, epochs, time_bins=None):
     """
 
     Note: It would be great if pl and bal were numpy.ndarray, but that would force
@@ -698,36 +667,21 @@ def _deconstruct_trees(trees, epochs):
     
     pl = []
     bal = []
+    tbw = []
     roots = []
     all_branch_lengths = [[] for e in epochs]
     for tree in trees:
-        num_nodes = len(tree.postorder())
-        parents = np.full(num_nodes, -1, dtype="int64")
-        branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
-        for node in tree.nodes(order="timeasc"):
-            parent = tree.parent(node)
-            if parent != -1:
-                node_time = tree.time(node)
-                parent_time = tree.time(parent)
-                starting_epoch = np.digitize(node_time, epochs)-1
-                ending_epoch = np.digitize(parent_time, epochs)-1
-                if starting_epoch == ending_epoch:
-                    branch_above[starting_epoch, node] = parent_time - node_time
-                else:
-                    branch_above[starting_epoch, node] = epochs[starting_epoch+1] - node_time
-                    for e in range(starting_epoch+1, ending_epoch):
-                        branch_above[e, node] = epochs[e+1] - epochs[e]
-                    branch_above[ending_epoch, node] = parent_time - epochs[ending_epoch]
-            parents[node] = parent
+        parents, branch_above, time_bin_widths = _deconstruct_tree(tree, epochs, time_bins=time_bins)
         pl.append(parents)
         bal.append(branch_above)
+        tbw.append(time_bin_widths)
         roots.append(np.where(parents==-1)[0])
         for e in range(len(epochs)):
             all_branch_lengths[e].extend(branch_above[e])
     unique_branch_lengths = []
     for e in range(len(epochs)):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
-    return pl, bal, roots, unique_branch_lengths
+    return pl, bal, tbw, roots, unique_branch_lengths
 
 def ts_to_nx(ts):
     """Covert tskit.TreeSequence to networkx graph
@@ -825,12 +779,16 @@ def run(
         samples_path,
         trees_dir_path,
         time_bins=None,
+        asymmetric=False,
         output_file=None
     ):
+
+    if output_file is not None:
+        sys.stdout = open(output_file, "w")
     
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
-    world_map = WorldMap(demes, samples)
+    world_map = WorldMap(demes, samples, asymmetric)
 
     if trees_dir_path[-1] != "/":
         trees_dir_path += "/"
@@ -841,136 +799,24 @@ def run(
         if time_bins is not None:
             tree = nx_bin_ts(tree, time_bins)
         trees.append(tree.first())
-    pl, bal, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs)  # needed to use numba
 
-    print(pl)
+    pl, bal, tbw, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)  # needed to use numba
 
-    bounds = [(-20, 7) for rate in world_map.connection_types]
+    bounds = [(-10, 5) for rate in world_map.existing_connection_types]
 
     res = shgo(
         calc_log_migration_rate_log_likelihood,
         bounds=bounds,
         n=100,
-        iters=5,
+        iters=max(5, len(bounds)),
         sampling_method="sobol",
-        args=(world_map, pl, bal, r, ubl)
+        args=(world_map, pl, bal, tbw, r, ubl, output_file)
     )
+
+    if output_file is not None:
+        sys.stdout.close()
 
     return res
-
-
-
-
-
-
-
-
-def locate_nodes_in_tree(tree, world_map, migration_rates):
-    transition_matrix = world_map.build_transition_matrices(migration_rates=migration_rates)
-
-    print("Precalculating transitions...")
-    precomputed_transitions = {}
-    for node in tree.nodes(order="timeasc"):
-        bl = tree.branch_length(node)
-        if bl not in precomputed_transitions:
-            where_next = linalg.expm(transition_matrix*bl)
-            where_next[where_next < 0] = 0
-            precomputed_transitions[bl] = where_next
-    
-    messages = {}
-    for node in tree.nodes(order="timeasc"):
-        bl = tree.branch_length(node)
-        if bl > 0:
-            if tree.is_sample(node):
-                messages[(node, tree.parent(node))] = np.matmul(world_map.sample_location_vectors[node], precomputed_transitions[bl])
-            else:
-                children = tree.children(node)
-                incoming_messages = [messages[(child, node)] for child in children]
-                for i in range(1,len(incoming_messages)):
-                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-                messages[(node, tree.parent(node))] = np.matmul(incoming_messages[0], precomputed_transitions[bl])
-    for node in tree.nodes(order="timedesc"):
-        children = tree.children(node)
-        incoming_keys = [key for key in messages.keys() if key[1] == node]
-        for child in children:
-            incoming_messages = []
-            for income in incoming_keys:
-                if income[0] != child:
-                    incoming_messages.append(messages[income])
-            for i in range(1,len(incoming_messages)):
-                incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-            bl = tree.branch_length(child)
-            messages[(node, child)] = np.matmul(incoming_messages[0], precomputed_transitions[bl])
-    node_locations = {}
-    for node in tree.nodes(order="timeasc"):
-        if tree.is_sample(node):
-            node_locations[node] = world_map.sample_location_vectors[node]
-        else:
-            incoming_messages = [messages[key] for key in messages.keys() if key[1] == node]
-            for i in range(1,len(incoming_messages)):
-                incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-            node_locations[node] = incoming_messages[0]
-    return node_locations
-
-def _get_messages(tree, world_map, migration_rates):
-    """
-    """
-    
-    transition_matrix = world_map.build_transition_matrices(migration_rates=migration_rates)
-    
-    total_number_of_edges = tree.num_edges+1
-    branch_lengths = np.zeros(total_number_of_edges, dtype="int64")
-    edge_counter = 0
-    for node in tree.nodes(order="timeasc"):
-        branch_lengths[edge_counter] = int(tree.branch_length(node))
-        edge_counter += 1
-    branch_lengths = np.unique(np.array(branch_lengths))
-
-    precomputed_transitions = precalculate_transitions(
-        branch_lengths=branch_lengths,
-        transition_matrix=transition_matrix
-    )
-    precomputed_transitions[precomputed_transitions <= 1e-99] = 1e-99   # ensures that this is important there aren't negatives from numerical instability
-    precomputed_log = np.log(precomputed_transitions)
-
-    messages = {}
-    for node in tree.nodes(order="timeasc"):
-        if tree.parent(node) != -1:
-            bl = int(tree.branch_length(node))
-            bl_index = np.where(branch_lengths==bl)[0][0]
-            if tree.is_sample(node):
-                messages[(node, tree.parent(node))] = np.matmul(world_map.sample_location_vectors[node], precomputed_transitions[bl_index])
-            else:
-                children = tree.children(node)
-                incoming_messages = [messages[(child, node)] for child in children]
-                if len(incoming_messages) > 0:
-                    for i in range(1,len(incoming_messages)):
-                        incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                        incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0]) 
-                    messages[(node, tree.parent(node))] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
-                else:
-                    messages[(node, tree.parent(node))] = np.ones((1,len(world_map.demes)))
-    for node in tree.nodes(order="timedesc"):
-        children = tree.children(node)
-        incoming_keys = [key for key in messages.keys() if key[1] == node]
-        for child in children:
-            incoming_messages = []
-            for income in incoming_keys:
-                if income[0] != child:
-                    incoming_messages.append(messages[income])
-            if len(incoming_messages) > 0:
-                for i in range(1,len(incoming_messages)):
-                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
-                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-                bl = int(tree.branch_length(child))
-                bl_index = np.where(branch_lengths==bl)[0][0]
-                messages[(node, child)] = np.matmul(incoming_messages[0], precomputed_transitions[bl_index])
-            else:
-                messages[(node, child)] = np.ones((1,len(world_map.demes)))
-    return messages
 
 def ancs(tree, u):
     """Find all of the ancestors above a node for a tree
@@ -992,6 +838,59 @@ def ancs(tree, u):
     while u != -1:
          yield u
          u = tree.parent(u)
+
+def _get_messages(
+        parents,
+        branch_above,
+        branch_lengths,
+        backwards,
+        forwards,
+        sample_locations_array,
+        sample_ids
+    ):
+
+    
+    num_demes = len(sample_locations_array[0])
+
+    messages = {}
+    for child in range(len(parents)):
+        parent = int(parents[child])
+        bl = branch_above[:, child]
+        included_epochs = np.where(bl > 0)[0]
+        if (len(included_epochs) > 0):
+            transition_prob = np.eye(num_demes)
+            for epoch in included_epochs:
+                bl_index = np.where(branch_lengths[epoch]==bl[epoch])[0][0]
+                transition_prob = np.dot(transition_prob, backwards[epoch][bl_index])
+            if child in sample_ids:
+                loc_vec = sample_locations_array[np.where(sample_ids==child)[0][0]]
+            else:
+                incoming_keys_child = [key for key in messages.keys() if key[1] == child]
+                incoming_messages = [messages[income] for income in incoming_keys_child]
+                for i in range(1,len(incoming_messages)):
+                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
+                loc_vec = incoming_messages[0]
+            messages[(child, parent)] = np.dot(loc_vec, transition_prob)
+    for child in range(len(parents)-1, -1, -1):
+        if child not in sample_ids:
+            parent = int(parents[child])
+            bl = branch_above[:, child]
+            included_epochs = np.where(bl > 0)[0]
+            if (len(included_epochs) > 0):
+                transition_prob = np.eye(num_demes)
+                for epoch in included_epochs:
+                    bl_index = np.where(branch_lengths[epoch]==bl[epoch])[0][0]
+                    transition_prob = np.dot(transition_prob, forwards[epoch][bl_index])
+                incoming_keys_parent = [key for key in messages.keys() if key[1] == parent]
+                incoming_messages = [messages[income] for income in incoming_keys_parent if income[0] != child]
+                for i in range(1,len(incoming_messages)):
+                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
+                loc_vec = incoming_messages[0]
+                messages[(parent, child)] = np.dot(loc_vec, transition_prob)
+    return messages
+        
 
 def track_lineage_over_time(
         sample,
@@ -1039,31 +938,62 @@ def track_lineage_over_time(
                 parent = ancestors[i]
                 break
         pc_combos.append((child, parent))
-    messages = _get_messages(tree=tree, world_map=world_map, migration_rates=migration_rates)
-    transition_matrix = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    parents, branch_above = _deconstruct_tree(tree, world_map.epochs)
+    
+    all_branch_lengths = [[] for e in world_map.epochs]
+    for e in range(len(world_map.epochs)):
+        all_branch_lengths[e].extend(branch_above[e])
+    unique_branch_lengths = []
+    for e in range(len(world_map.epochs)):
+        unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
+
+    transition_matrices_backwards = world_map.build_transition_matrices(migration_rates=migration_rates)
+    precomputed_transitions_backwards = precalculate_transitions(
+        branch_lengths=unique_branch_lengths,
+        transition_matrices=transition_matrices_backwards
+    )
+    transition_matrices_forwards = transition_matrices_backwards.copy()
+    if world_map.asymmetric == True:
+        for e in range(len(transition_matrices_forwards)):
+            transition_matrices_forwards[e] = transition_matrices_forwards[e].T
+        precomputed_transitions_forwards = precalculate_transitions(
+            branch_lengths=unique_branch_lengths,
+            transition_matrices=transition_matrices_forwards
+        )
+    else:
+        precomputed_transitions_forwards = precomputed_transitions_backwards.copy()
+
+    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+
+    messages = _get_messages(
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        precomputed_transitions_backwards,
+        precomputed_transitions_forwards,
+        sample_locations_array,
+        sample_ids
+    )
+
     positions = {}
     for element,node_combo in enumerate(pc_combos):
         if node_combo[0] == node_combo[1]:
-            if node_combo[0] in world_map.sample_location_vectors:
-                node_pos = world_map.sample_location_vectors[node_combo[0]]
+            if node_combo[0] in sample_ids:
+                node_pos = sample_locations_array[np.where(sample_ids==node_combo[0])[0][0]]
             else:
                 incoming_keys = [key for key in messages.keys() if key[1] == node_combo[0]]
-                incoming_messages = []
-                for income in incoming_keys:
-                    incoming_messages.append(messages[income])
+                incoming_messages = [messages[income] for income in incoming_keys]
                 for i in range(1,len(incoming_messages)):
                     incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
                     incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
                 node_pos = incoming_messages[0]
         else:
-            if node_combo[0] in world_map.sample_location_vectors:
-                child_pos = world_map.sample_location_vectors[node_combo[0]]
+            if node_combo[0] in sample_ids:
+                child_pos = sample_locations_array[np.where(sample_ids==node_combo[0])[0][0]]
             else:
                 incoming_keys_child = [key for key in messages.keys() if key[1] == node_combo[0]]
-                incoming_messages_child = []
-                for income in incoming_keys_child:
-                    if income[0] != node_combo[1]:
-                        incoming_messages_child.append(messages[income])
+                incoming_messages_child = [messages[income] for income in incoming_keys_child if income[0] != node_combo[1]]
                 if len(incoming_keys_child) > 0:
                     for i in range(1,len(incoming_messages_child)):
                         incoming_messages_child[0] = np.multiply(incoming_messages_child[0], incoming_messages_child[i])
@@ -1071,10 +1001,8 @@ def track_lineage_over_time(
                     child_pos = incoming_messages_child[0]
                 else:
                     child_pos = np.ones((1,len(world_map.demes)))
-            branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
-            outgoing_child_message = np.matmul(child_pos, np.linalg.matrix_power(linalg.expm(transition_matrix), branch_length_to_child))
-            if node_combo[1] in world_map.sample_location_vectors:
-                parent_pos = world_map.sample_location_vectors[node_combo[1]]
+            if node_combo[1] in sample_ids:
+                parent_pos = sample_locations_array[np.where(sample_ids==node_combo[1])[0][0]]
             else:
                 incoming_keys_parent = [key for key in messages.keys() if key[1] == node_combo[1]]
                 incoming_messages_parent = []
@@ -1088,8 +1016,32 @@ def track_lineage_over_time(
                     parent_pos = incoming_messages_parent[0]
                 else:
                     parent_pos = np.ones((1,len(world_map.demes)))
-            branch_length_to_parent = int(tree.time(node_combo[1]) - times[element])
-            outgoing_parent_message = np.matmul(parent_pos, np.linalg.matrix_power(linalg.expm(transition_matrix), branch_length_to_parent))
+
+            branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
+            bl_child = branch_above[:, node_combo[0]].copy()
+            bl_parent = bl_child.copy()
+            whats_left = branch_length_to_child
+            for e in world_map.epochs:
+                current = bl_parent[e].copy()
+                if current >= whats_left:
+                    bl_parent[e] -= whats_left
+                else:
+                    bl_parent[e] = 0
+                whats_left -= current
+            bl_child -= bl_parent
+
+            included_epochs = np.where(bl_child > 0)[0]
+            transition_prob_backwards = np.eye(len(world_map.demes))
+            for e in included_epochs:
+                transition_prob_backwards = np.dot(transition_prob_backwards, np.linalg.matrix_power(linalg.expm(transition_matrices_backwards[e]), bl_child[e]))
+
+            included_epochs = np.where(bl_parent > 0)[0]
+            transition_prob_forwards = np.eye(len(world_map.demes))
+            for e in included_epochs:
+                transition_prob_forwards = np.dot(transition_prob_forwards, np.linalg.matrix_power(linalg.expm(transition_matrices_forwards[e]), bl_parent[e]))
+            
+            outgoing_child_message = np.dot(child_pos, transition_prob_backwards)
+            outgoing_parent_message = np.dot(parent_pos, transition_prob_forwards)
             node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
             node_pos = node_pos / np.sum(node_pos)
         positions[times[element]] = node_pos

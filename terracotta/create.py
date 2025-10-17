@@ -102,9 +102,6 @@ def _simulate_independent_trees(
             ploidy=ploidy,
             demography=demography,
             record_full_arg=True
-            #record_migrations=True,
-            #additional_nodes=msprime.NodeType.MIGRANT,
-            #coalescing_segments_only=False
         )
         yield ts
 
@@ -116,6 +113,7 @@ def create_trees_files(
         ploidy=1,
         migration_rate=None,
         migration_rates=None,
+        asymmetric=False,
         output_directory="."
     ):
     """
@@ -141,14 +139,14 @@ def create_trees_files(
 
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
-    world_map = WorldMap(demes=demes, samples=samples)
+    world_map = WorldMap(demes=demes, samples=samples, asymmetric=asymmetric)
 
     if migration_rate == None and migration_rates == None:
         raise RuntimeError("Must provide either `migration_rate` or `migration_rates`.")
     elif migration_rate != None and migration_rates != None:
         raise RuntimeError("Must provide either `migration_rate` or `migration_rates`, not both.")
     elif migration_rate != None:
-        migration_rates = {i:migration_rate for i in range(len(world_map.connection_types))}
+        migration_rates = {i:migration_rate for i in world_map.existing_connection_types}
 
     mkdir(f"{output_directory}/trees")
     trees = _simulate_independent_trees(
@@ -329,6 +327,7 @@ def create_arg_file(
         pop_size,
         migration_rate=None,
         migration_rates=None,
+        mutation_rate=None,
         output_path="arg.trees"
     ):
     """Simulates an ARG on the stepping stone demography
@@ -346,6 +345,8 @@ def create_arg_file(
         Single migration rate between neighboring demes. (default=None, ignored)
     migration_rates : dict
         Key is the type of connection and value is the migration rate of that connection type. (default=None, ignored)
+    mutation_rate : float
+        Mutation rate if users wants to simulation mutations on the ARG. (default=None, ignored)
     output_directory : string
         Path to directory where file will be written. (default=".")
 
@@ -356,11 +357,11 @@ def create_arg_file(
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
 
-    if migration_rate == None and migration_rates == None:
+    if migration_rate is None and migration_rates is None:
         raise RuntimeError("Must provide either `migration_rate` or `migration_rates`.")
-    elif migration_rate != None and migration_rates != None:
+    elif migration_rate is not None and migration_rates is not None:
         raise RuntimeError("Must provide either `migration_rate` or `migration_rates`, not both.")
-    elif migration_rate != None:
+    elif migration_rate is not None:
         deme_types = demes["type"].unique()
         transitions = list(combinations_with_replacement(deme_types, 2))
         migration_rates = {i:migration_rate for i in range(len(transitions))}
@@ -379,6 +380,11 @@ def create_arg_file(
         demography=demography,
         record_full_arg=True
     )
+    if mutation_rate is not None:
+        arg = msprime.sim_mutations(
+            arg,
+            rate=mutation_rate
+        )
     arg.dump(output_path)
 
 

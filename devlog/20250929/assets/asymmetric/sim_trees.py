@@ -15,9 +15,14 @@ world_map = tct.WorldMap(demes, samples)
 tct.create_trees_files(
     demes_path="demes.tsv",
     samples_path="samples.tsv",
-    number_of_trees=1000,
+    number_of_trees=100,
     pop_size=10,
-    migration_rate=0.01,
+    migration_rates={
+        0:0.01,
+        1:0.01,
+        2:0.10
+    },
+    asymmetric=False,
     output_directory="."
 )
 

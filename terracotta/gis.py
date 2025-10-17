@@ -18,6 +18,7 @@ def tile_shapefile(path_to_shp, resolution, subset=None):
     """
     
     shp = gpd.read_file(path_to_shp)
+    shp = shp.to_crs(4326)
     if subset != None:
         for col in subset:
             if col == "index":

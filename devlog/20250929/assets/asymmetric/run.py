@@ -22,8 +22,9 @@ from glob import glob
 res = tct.run(
     demes_path="demes.tsv",
     samples_path="samples.tsv",
-    trees_dir_path="symmetric",
-    time_bins=[0]+[10**i for i in range(0, 10)]
+    trees_dir_path="trees",
+    time_bins=[0]+[10**i for i in range(0,10)],
+    asymmetric=False
 )
 
 print(res)

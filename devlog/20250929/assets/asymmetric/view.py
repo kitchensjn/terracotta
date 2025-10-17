@@ -15,6 +15,8 @@ world_map = tct.WorldMap(demes)
 
 world_map.draw((7,7), color_demes=True, color_connections=True)
 
+exit()
+
 
 
 trees = [tskit.load(tree).simplify().first() for tree in glob("symmetric/*")]
