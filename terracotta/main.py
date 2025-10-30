@@ -49,8 +49,7 @@ class WorldMap:
         samples : pandas.DataFrame
         """
 
-        self.demes = demes.copy()
-        
+        self.demes = demes.copy()        
         self.demes["type"] = self.demes["type"].astype(str)
         
         formatted_dt = []
@@ -71,6 +70,7 @@ class WorldMap:
             converted_neighbors.append(int_neighbors)
         self.demes["neighbours"] = converted_neighbors
 
+        self.samples = None
         self.sample_location_array = None
         if samples is not None:
             self.samples = samples.copy()
@@ -244,6 +244,8 @@ class WorldMap:
             color_demes=False,
             save_to=None,
             location_vector=None,
+            show_samples=False,
+            title=None,
             show=True
         ):
 
@@ -315,13 +317,20 @@ class WorldMap:
                     else:
                         axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
                 if location_vector is not None:
-                    plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=500, marker="s")
-                #if color_demes:
-                #    deme_types_at_time = self.get_all_deme_types_at_time(times[e])
-                #    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
+                    plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=50)
+                if isinstance(self.samples, pd.DataFrame) and show_samples:
+                    counts = self.samples["deme"].value_counts().reset_index()
+                    counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
+                    axs[e//ncols, e%ncols].scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
+                elif color_demes:
+                    deme_types_at_time = self.get_all_deme_types_at_time(times[e])
+                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
                 #else:
                 #    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], color="grey", zorder=2)
-                axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
+                if title is None:
+                    axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
+                else:
+                    axs[e//ncols, e%ncols].set_title(title, fontname="Georgia")
             axs[e//ncols, e%ncols].set_aspect("equal", 'box')
             axs[e//ncols, e%ncols].axis("off")
 
@@ -423,7 +432,8 @@ def _calc_tree_log_likelihood(
         sample_ids,
         sample_locations_array,
         branch_lengths,
-        precomputed_transitions
+        precomputed_transitions,
+        log_stationary
     ):
     """Calculates the log-likelihood of a tree
 
@@ -446,6 +456,8 @@ def _calc_tree_log_likelihood(
     
     num_nodes = len(branch_above_list[0])
     num_demes = len(sample_locations_array[0])
+
+    print(num_nodes, num_demes)
 
     log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
 
@@ -488,8 +500,9 @@ def _calc_tree_log_likelihood(
     counter = 0
     for r in roots:
         if r not in sample_ids:
-            c = np.max(log_messages[r])
-            root_log_likes[counter] = c + np.log(np.sum(np.exp(log_messages[r] - c), axis=0))
+            root_pos = log_messages[r] + log_stationary
+            c = np.max(root_pos)
+            root_log_likes[counter] = c + np.log(np.sum(np.exp(root_pos - c), axis=0))
         counter += 1
     tree_likelihood = sum(root_log_likes)
     return tree_likelihood, root_log_likes
@@ -503,7 +516,8 @@ def _parallel_process_trees(
         sample_ids,
         sample_locations_array,
         branch_lengths,
-        precomputed_transitions
+        precomputed_transitions,
+        log_stationary
     ):
     """Calculates and combines the log-likelihood of every tree
 
@@ -535,6 +549,7 @@ def _parallel_process_trees(
             sample_locations_array=sample_locations_array,
             branch_lengths=branch_lengths,
             precomputed_transitions=precomputed_transitions,
+            log_stationary=log_stationary
         )[0]
     mr_log_like = sum(log_likelihoods)
     return mr_log_like, log_likelihoods
@@ -608,12 +623,21 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, bran
 
     transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
 
+    # https://people.duke.edu/~ccc14/sta-663-2016/homework/Homework02_Solutions.html
+    eigenvalues, eigenvectors = np.linalg.eig(transition_matrices[-1].T)
+    idx = np.argmin(np.abs(eigenvalues - 1))
+    w = np.real(eigenvectors[:, idx]).T
+    stationary = w/np.sum(w)
+    stationary[stationary<1e-99] = 1e-99
+    log_stationary = np.log(stationary)
+    
     precomputed_transitions = precalculate_transitions(
         branch_lengths=branch_lengths,
         transition_matrices=transition_matrices
     )
 
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+
     like, like_list = _parallel_process_trees(
         parents=parents,
         branch_above=branch_above,
@@ -622,12 +646,14 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, bran
         sample_ids=sample_ids,
         sample_locations_array=sample_locations_array,
         branch_lengths=branch_lengths,
-        precomputed_transitions=precomputed_transitions
+        precomputed_transitions=precomputed_transitions,
+        log_stationary=log_stationary
     )
     if output_file is not None:
         print(migration_rates, abs(like), file=f)
     else:
-        print(migration_rates, abs(like), flush=True)
+        pass
+        #print(migration_rates, abs(like), flush=True)
     return abs(like)
 
 def _deconstruct_tree(tree, epochs, time_bins=None):
@@ -774,6 +800,49 @@ def nx_bin_ts(ts, bins):
     ts_out = tables.tree_sequence()
     return ts_out
 
+def run_for_single(
+        migration_rates,
+        demes_path,
+        samples_path,
+        trees_dir_path,
+        time_bins=None,
+        asymmetric=False,
+        output_file=None
+    ):
+
+    if output_file is not None:
+        sys.stdout = open(output_file, "w")
+    
+    demes = pd.read_csv(demes_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, samples, asymmetric)
+
+    if trees_dir_path[-1] != "/":
+        trees_dir_path += "/"
+    
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts).simplify()
+        if time_bins is not None:
+            tree = nx_bin_ts(tree, time_bins)
+        trees.append(tree.first())
+
+    pl, bal, tbw, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)  # needed to use numba
+
+    likelihood = calc_migration_rate_log_likelihood(
+        migration_rates=migration_rates,
+        world_map=world_map,
+        parents=pl,
+        branch_above=bal,
+        time_bin_widths=tbw,
+        roots=r,
+        branch_lengths=ubl,
+        output_file=output_file
+    )
+
+    return likelihood
+
+
 def run(
         demes_path,
         samples_path,
@@ -870,7 +939,10 @@ def _get_messages(
                 for i in range(1,len(incoming_messages)):
                     incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
                     incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-                loc_vec = incoming_messages[0]
+                if len(incoming_messages) > 0:
+                    loc_vec = incoming_messages[0]
+                else:
+                    loc_vec = np.ones(num_demes)
             messages[(child, parent)] = np.dot(loc_vec, transition_prob)
     for child in range(len(parents)-1, -1, -1):
         if child not in sample_ids:
@@ -887,7 +959,10 @@ def _get_messages(
                 for i in range(1,len(incoming_messages)):
                     incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
                     incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
-                loc_vec = incoming_messages[0]
+                if len(incoming_messages) > 0:
+                    loc_vec = incoming_messages[0]
+                else:
+                    loc_vec = np.ones(num_demes)
                 messages[(parent, child)] = np.dot(loc_vec, transition_prob)
     return messages
         
@@ -939,7 +1014,7 @@ def track_lineage_over_time(
                 break
         pc_combos.append((child, parent))
 
-    parents, branch_above = _deconstruct_tree(tree, world_map.epochs)
+    parents, branch_above, time_bin_widths = _deconstruct_tree(tree, world_map.epochs)
     
     all_branch_lengths = [[] for e in world_map.epochs]
     for e in range(len(world_map.epochs)):
@@ -953,7 +1028,7 @@ def track_lineage_over_time(
         branch_lengths=unique_branch_lengths,
         transition_matrices=transition_matrices_backwards
     )
-    transition_matrices_forwards = transition_matrices_backwards.copy()
+    transition_matrices_forwards = transition_matrices_backwards.copy()     # The following is incorrect
     if world_map.asymmetric == True:
         for e in range(len(transition_matrices_forwards)):
             transition_matrices_forwards[e] = transition_matrices_forwards[e].T
@@ -1000,7 +1075,7 @@ def track_lineage_over_time(
                         incoming_messages_child[0] = incoming_messages_child[0] / np.sum(incoming_messages_child[0])
                     child_pos = incoming_messages_child[0]
                 else:
-                    child_pos = np.ones((1,len(world_map.demes)))
+                    child_pos = np.ones((1,len(world_map.demes)))[0]
             if node_combo[1] in sample_ids:
                 parent_pos = sample_locations_array[np.where(sample_ids==node_combo[1])[0][0]]
             else:
@@ -1015,13 +1090,13 @@ def track_lineage_over_time(
                         incoming_messages_parent[0] = incoming_messages_parent[0] / np.sum(incoming_messages_parent[0])
                     parent_pos = incoming_messages_parent[0]
                 else:
-                    parent_pos = np.ones((1,len(world_map.demes)))
+                    parent_pos = np.ones((1,len(world_map.demes)))[0]
 
             branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
             bl_child = branch_above[:, node_combo[0]].copy()
             bl_parent = bl_child.copy()
             whats_left = branch_length_to_child
-            for e in world_map.epochs:
+            for e in range(len(world_map.epochs)):
                 current = bl_parent[e].copy()
                 if current >= whats_left:
                     bl_parent[e] -= whats_left
