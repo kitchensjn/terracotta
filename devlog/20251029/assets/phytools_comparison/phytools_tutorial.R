@@ -1,10 +1,12 @@
 library(phytools)
 library(expm)
 
+
 pruning<-function(q,tree,x,model=NULL,...){
   if(hasArg(return)) return<-list(...)$return
   else return<-"likelihood"
   pw<-reorder(tree,"postorder")
+  print(pw)
   k<-length(levels(x))
   if(is.null(model)){
     model<-matrix(1,k,k)
@@ -27,17 +29,6 @@ pruning<-function(q,tree,x,model=NULL,...){
       PP[j,]<-P%*%L[pw$edge[ee[j],2],]
     }
     L[nn[i],]<-apply(PP,2,prod)
-    #if (ee[1] == 105) {
-    #  print(ee)
-    #  print(pw$edge[ee[1],])
-    #  print(L[pw$edge[ee[1],2],])
-    #  print(pw$edge.length[ee[1]])
-    #  print(pw$edge[ee[2],])
-    #  print(L[pw$edge[ee[2],2],])
-    #  print(pw$edge.length[ee[2]])
-    #  print(P)
-    #  print(PP)
-    #}
   }
   prob<-log(sum(pi*L[nn[i],]))
   if(return=="likelihood") prob
@@ -65,9 +56,70 @@ fitted<-optim(c(1,1),pruning,tree=eel.tree,x=feeding_mode,
               model=model,method="L-BFGS-B",lower=1e-12,
               control=list(fnscale=-1))
 
-fitted
+asr<-function(q,tree,L,model=NULL){
+  pw<-reorder(tree,"postorder")
+  print(pw)
+  k<-ncol(L)
+  if(is.null(model)){
+    model<-matrix(1,k,k)
+    diag(model)<-0
+  }
+  Q<-matrix(0,k,k)
+  Q[]<-c(0,q)[model+1]
+  diag(Q)<--rowSums(Q)
+  nn<-unique(pw$edge[,1])
+  for(i in length(nn):1){
+    #if (ee[1] == 105) {
+    #  print(ee)
+    #  print(pw$edge[ee[1],])
+    #  print(L[pw$edge[ee[1],2],])
+    #  print(pw$edge.length[ee[1]])
+    #  print(pw$edge[ee[2],])
+    #  print(L[pw$edge[ee[2],2],])
+    #  print(pw$edge.length[ee[2]])
+    #  print(P)
+    #  print(PP)
+    #}
+    ee<-which(pw$edge[,1]==nn[i])
+    for(j in 1:length(ee)){
+      P<-expm(Q*pw$edge.length[ee[j]])
+      pp<-t(L[nn[i],]/(P%*%L[pw$edge[ee[j],2],]))
+      L[pw$edge[ee[j],2],]<-(pp%*%P)*
+        L[pw$edge[ee[j],2],]
+      print(i)
+      print(ee[j])
+      print(L[nn[i],])
+      print(L[pw$edge[ee[j],2],])
+      print(P)
+      print(pp)
+      print("---------")
+    }
+  }
+  anc<-L/rep(rowSums(L),k)
+  anc[1:Nnode(tree)+Ntip(tree),]
+}
 
-pruning(q=c(0.2, 0.4), tree=eel.tree, x=feeding_mode, model=model)
+## now get our conditional likelihood, fixing Q
+L<-pruning(c(0.01, 0.01),eel.tree,feeding_mode,model=model,
+           return="conditional")
+## finally, perform our ancestral state reconstruction
+eel_asr<-asr(c(0.01, 0.01),eel.tree,L,model=model)
+
+eel_asr
+
+
+plotTree(eel.tree,ftype="i",offset=0.5)
+nodelabels(pie=eel_asr,piecol=viridisLite::viridis(n=2),
+           cex=0.5)
+tiplabels(pie=to.matrix(feeding_mode[eel.tree$tip.label],
+                        levels(feeding_mode)),piecol=viridisLite::viridis(n=2),cex=0.4)
+
+
+
+
+
+
+
 
 
 fitMk(eel.tree,feeding_mode,model="ARD")

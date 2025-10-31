@@ -471,7 +471,7 @@ def _calc_tree_log_likelihood(
                 transition_prob = np.dot(transition_prob, precomputed_transitions[epoch][bl_index])
             log_messages[i] = np.log(np.dot(transition_prob, sample_locations_array[counter]))
     
-    for j, i in enumerate(ids_asc_time):
+    for i in ids_asc_time:
         children_of_i = np.where(parent_list==i)[0]
         if len(children_of_i) > 0:
             incoming_log_messages = np.zeros((len(children_of_i), num_demes), dtype="float64")
@@ -919,16 +919,18 @@ def _get_messages(
         branch_above,
         branch_lengths,
         backwards,
-        forwards,
         sample_locations_array,
-        sample_ids
+        sample_ids,
+        ids_asc_time,
+        roots,
+        stationary
     ):
 
-    
+
     num_demes = len(sample_locations_array[0])
 
     messages = {}
-    for child in range(len(parents)):
+    for child in ids_asc_time:
         parent = int(parents[child])
         bl = branch_above[:, child]
         included_epochs = np.where(bl > 0)[0]
@@ -949,8 +951,14 @@ def _get_messages(
                     loc_vec = incoming_messages[0]
                 else:
                     loc_vec = np.ones(num_demes)
-            messages[(child, parent)] = np.dot(loc_vec, transition_prob)
-    for child in range(len(parents)-1, -1, -1):
+            messages[(child, parent)] = np.dot(transition_prob, loc_vec)
+        elif parent != -1:
+            messages[(child, parent)] = loc_vec
+
+    for root in roots:
+        messages[(-1, root)] = stationary
+
+    for child in ids_asc_time[-1::-1]:#range(len(parents)-1, -1, -1):
         if child not in sample_ids:
             parent = int(parents[child])
             bl = branch_above[:, child]
@@ -959,7 +967,7 @@ def _get_messages(
                 transition_prob = np.eye(num_demes)
                 for epoch in included_epochs:
                     bl_index = np.where(branch_lengths[epoch]==bl[epoch])[0][0]
-                    transition_prob = np.dot(transition_prob, forwards[epoch][bl_index])
+                    transition_prob = np.dot(transition_prob, backwards[epoch][bl_index])
                 incoming_keys_parent = [key for key in messages.keys() if key[1] == parent]
                 incoming_messages = [messages[income] for income in incoming_keys_parent if income[0] != child]
                 for i in range(1,len(incoming_messages)):
@@ -1004,9 +1012,11 @@ def track_lineage_over_time(
     """
 
     ancestors = [sample] + list(ancs(tree=tree, u=sample))
+
     node_times = []
     for a in ancestors:
-        node_times.append(tree.time(a))
+        node_times.append(int(tree.time(a)))
+
     pc_combos = []
     for t in times:
         for i,v in enumerate(node_times):
@@ -1020,7 +1030,7 @@ def track_lineage_over_time(
                 break
         pc_combos.append((child, parent))
 
-    parents, branch_above, time_bin_widths = _deconstruct_tree(tree, world_map.epochs)
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
     
     all_branch_lengths = [[] for e in world_map.epochs]
     for e in range(len(world_map.epochs)):
@@ -1029,21 +1039,20 @@ def track_lineage_over_time(
     for e in range(len(world_map.epochs)):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
 
-    transition_matrices_backwards = world_map.build_transition_matrices(migration_rates=migration_rates)
-    precomputed_transitions_backwards = precalculate_transitions(
+    roots = np.where(parents==-1)[0]
+
+    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    # https://people.duke.edu/~ccc14/sta-663-2016/homework/Homework02_Solutions.html
+    eigenvalues, eigenvectors = np.linalg.eig(transition_matrices[-1].T)
+    idx = np.argmin(np.abs(eigenvalues - 1))
+    w = np.real(eigenvectors[:, idx]).T
+    stationary = w/np.sum(w)
+
+    precomputed_transitions = precalculate_transitions(
         branch_lengths=unique_branch_lengths,
-        transition_matrices=transition_matrices_backwards
+        transition_matrices=transition_matrices
     )
-    transition_matrices_forwards = transition_matrices_backwards.copy()     # The following is incorrect
-    if world_map.asymmetric == True:
-        for e in range(len(transition_matrices_forwards)):
-            transition_matrices_forwards[e] = transition_matrices_forwards[e].T
-        precomputed_transitions_forwards = precalculate_transitions(
-            branch_lengths=unique_branch_lengths,
-            transition_matrices=transition_matrices_forwards
-        )
-    else:
-        precomputed_transitions_forwards = precomputed_transitions_backwards.copy()
 
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
 
@@ -1051,10 +1060,12 @@ def track_lineage_over_time(
         parents,
         branch_above,
         unique_branch_lengths,
-        precomputed_transitions_backwards,
-        precomputed_transitions_forwards,
+        precomputed_transitions,
         sample_locations_array,
-        sample_ids
+        sample_ids,
+        ids_asc_time,
+        roots,
+        stationary
     )
 
     positions = {}
@@ -1114,16 +1125,77 @@ def track_lineage_over_time(
             included_epochs = np.where(bl_child > 0)[0]
             transition_prob_backwards = np.eye(len(world_map.demes))
             for e in included_epochs:
-                transition_prob_backwards = np.dot(transition_prob_backwards, np.linalg.matrix_power(linalg.expm(transition_matrices_backwards[e]), bl_child[e]))
+                transition_prob_backwards = np.dot(transition_prob_backwards, np.linalg.matrix_power(linalg.expm(transition_matrices[e]), bl_child[e]))
 
             included_epochs = np.where(bl_parent > 0)[0]
             transition_prob_forwards = np.eye(len(world_map.demes))
             for e in included_epochs:
-                transition_prob_forwards = np.dot(transition_prob_forwards, np.linalg.matrix_power(linalg.expm(transition_matrices_forwards[e]), bl_parent[e]))
+                transition_prob_forwards = np.dot(transition_prob_forwards, np.linalg.matrix_power(linalg.expm(transition_matrices[e]), bl_parent[e]))
             
-            outgoing_child_message = np.dot(child_pos, transition_prob_backwards)
+            outgoing_child_message = np.dot(transition_prob_backwards, child_pos)
             outgoing_parent_message = np.dot(parent_pos, transition_prob_forwards)
             node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
             node_pos = node_pos / np.sum(node_pos)
         positions[times[element]] = node_pos
     return positions
+
+
+def locate_nodes(
+        tree,
+        world_map,
+        migration_rates
+    ):
+
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
+    
+    all_branch_lengths = [[] for e in world_map.epochs]
+    for e in range(len(world_map.epochs)):
+        all_branch_lengths[e].extend(branch_above[e])
+    unique_branch_lengths = []
+    for e in range(len(world_map.epochs)):
+        unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
+
+    roots = np.where(parents==-1)[0]
+
+    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    # https://people.duke.edu/~ccc14/sta-663-2016/homework/Homework02_Solutions.html
+    eigenvalues, eigenvectors = np.linalg.eig(transition_matrices[-1].T)
+    idx = np.argmin(np.abs(eigenvalues - 1))
+    w = np.real(eigenvectors[:, idx]).T
+    stationary = w/np.sum(w)
+
+    precomputed_transitions = precalculate_transitions(
+        branch_lengths=unique_branch_lengths,
+        transition_matrices=transition_matrices
+    )
+
+    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+
+    messages = _get_messages(
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        precomputed_transitions,
+        sample_locations_array,
+        sample_ids,
+        ids_asc_time,
+        roots,
+        stationary
+    )
+
+    locs = np.zeros((len(parents), len(world_map.demes)), dtype="float64")
+    for node in tree.nodes():
+        if node in sample_ids:
+            locs[node] = sample_locations_array[np.where(sample_ids==node)[0][0]]
+        else:
+            incoming_keys = [key for key in messages.keys() if key[1] == node]
+            incoming_messages = [messages[income] for income in incoming_keys]
+            if len(incoming_messages) > 0:
+                for i in range(1,len(incoming_messages)):
+                    incoming_messages[0] = np.multiply(incoming_messages[0], incoming_messages[i])
+                    incoming_messages[0] = incoming_messages[0] / np.sum(incoming_messages[0])
+                locs[node] = incoming_messages[0]
+            else:
+                raise RuntimeError(f"No incoming messages for Node {node}. Check the connectedness of your tree to ensure all non-sample nodes are connected.")
+    return locs
