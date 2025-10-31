@@ -428,6 +428,7 @@ def _calc_tree_log_likelihood(
         parent_list,
         branch_above_list,
         time_bin_widths,
+        ids_asc_time,
         roots,
         sample_ids,
         sample_locations_array,
@@ -457,8 +458,6 @@ def _calc_tree_log_likelihood(
     num_nodes = len(branch_above_list[0])
     num_demes = len(sample_locations_array[0])
 
-    print(num_nodes, num_demes)
-
     log_messages = np.zeros((num_nodes, num_demes), dtype="float64")
 
     for counter in range(len(sample_ids)):
@@ -470,9 +469,9 @@ def _calc_tree_log_likelihood(
             for epoch in included_epochs:
                 bl_index = np.where(branch_lengths[epoch]==bl[epoch])[0][0]
                 transition_prob = np.dot(transition_prob, precomputed_transitions[epoch][bl_index])
-            log_messages[i] = np.log(np.dot(sample_locations_array[counter], transition_prob))
+            log_messages[i] = np.log(np.dot(transition_prob, sample_locations_array[counter]))
     
-    for i in range(num_nodes):
+    for j, i in enumerate(ids_asc_time):
         children_of_i = np.where(parent_list==i)[0]
         if len(children_of_i) > 0:
             incoming_log_messages = np.zeros((len(children_of_i), num_demes), dtype="float64")
@@ -512,6 +511,7 @@ def _parallel_process_trees(
         parents,
         branch_above,
         time_bin_widths,
+        ids_asc_time,
         roots,
         sample_ids,
         sample_locations_array,
@@ -544,6 +544,7 @@ def _parallel_process_trees(
             parent_list=parents[i],
             branch_above_list=branch_above[i],
             time_bin_widths=time_bin_widths[i],
+            ids_asc_time=ids_asc_time[i],
             roots=roots[i],
             sample_ids=sample_ids,
             sample_locations_array=sample_locations_array,
@@ -597,11 +598,11 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
         all_transitions.append(transitions)
     return all_transitions
 
-def calc_log_migration_rate_log_likelihood(log_migration_rates, world_map, parents, branch_above, time_bin_widths, roots, branch_lengths, output_file=None):
+def calc_log_migration_rate_log_likelihood(log_migration_rates, world_map, parents, branch_above, time_bin_widths, ids_asc_time, roots, branch_lengths, output_file=None):
     migration_rates = np.exp(log_migration_rates)
-    return calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, time_bin_widths, roots, branch_lengths, output_file=None)
+    return calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, time_bin_widths, ids_asc_time, roots, branch_lengths, output_file=None)
 
-def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, time_bin_widths, roots, branch_lengths, output_file=None):
+def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, branch_above, time_bin_widths, ids_asc_time, roots, branch_lengths, output_file=None):
     """Calculates the composite log-likelihood of the specified migration rates across trees
     
     Loops through all trees and calculates the log-likelihood for each, before summing together.
@@ -642,6 +643,7 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, bran
         parents=parents,
         branch_above=branch_above,
         time_bin_widths=time_bin_widths,
+        ids_asc_time=ids_asc_time,
         roots=roots,
         sample_ids=sample_ids,
         sample_locations_array=sample_locations_array,
@@ -652,8 +654,7 @@ def calc_migration_rate_log_likelihood(migration_rates, world_map, parents, bran
     if output_file is not None:
         print(migration_rates, abs(like), file=f)
     else:
-        pass
-        #print(migration_rates, abs(like), flush=True)
+        print(migration_rates, abs(like), flush=True)
     return abs(like)
 
 def _deconstruct_tree(tree, epochs, time_bins=None):
@@ -661,7 +662,8 @@ def _deconstruct_tree(tree, epochs, time_bins=None):
     parents = np.full(num_nodes, -1, dtype="int64")
     branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
     time_bin_widths = np.full(num_nodes, -1, dtype="int64")
-    for node in tree.nodes(order="timeasc"):
+    ids_asc_time = np.full(num_nodes, -1, dtype="int64")
+    for i,node in enumerate(tree.nodes(order="timeasc")):
         node_time = tree.time(node)
         parent = tree.parent(node)
         if parent != -1:
@@ -675,6 +677,7 @@ def _deconstruct_tree(tree, epochs, time_bins=None):
                 for e in range(starting_epoch+1, ending_epoch):
                     branch_above[e, node] = epochs[e+1] - epochs[e]
                 branch_above[ending_epoch, node] = parent_time - epochs[ending_epoch]
+        ids_asc_time[i] = node
         parents[node] = parent
         if time_bins is not None:
             i = next(j for j, e in enumerate(time_bins) if e >= node_time)
@@ -682,7 +685,7 @@ def _deconstruct_tree(tree, epochs, time_bins=None):
             time_bin_widths[node] = width
         else:
             time_bin_widths[node] = 1
-    return parents, branch_above, time_bin_widths
+    return parents, branch_above, time_bin_widths, ids_asc_time
 
 def _deconstruct_trees(trees, epochs, time_bins=None):
     """
@@ -694,20 +697,22 @@ def _deconstruct_trees(trees, epochs, time_bins=None):
     pl = []
     bal = []
     tbw = []
+    iat = []
     roots = []
     all_branch_lengths = [[] for e in epochs]
     for tree in trees:
-        parents, branch_above, time_bin_widths = _deconstruct_tree(tree, epochs, time_bins=time_bins)
+        parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, epochs, time_bins=time_bins)
         pl.append(parents)
         bal.append(branch_above)
         tbw.append(time_bin_widths)
+        iat.append(ids_asc_time)
         roots.append(np.where(parents==-1)[0])
         for e in range(len(epochs)):
             all_branch_lengths[e].extend(branch_above[e])
     unique_branch_lengths = []
     for e in range(len(epochs)):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
-    return pl, bal, tbw, roots, unique_branch_lengths
+    return pl, bal, tbw, iat, roots, unique_branch_lengths
 
 def ts_to_nx(ts):
     """Covert tskit.TreeSequence to networkx graph
@@ -822,12 +827,12 @@ def run_for_single(
     
     trees = []
     for ts in glob(trees_dir_path+"*"):
-        tree = tskit.load(ts).simplify()
+        tree = tskit.load(ts)
         if time_bins is not None:
             tree = nx_bin_ts(tree, time_bins)
         trees.append(tree.first())
 
-    pl, bal, tbw, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)  # needed to use numba
+    pl, bal, tbw, iat, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)  # needed to use numba
 
     likelihood = calc_migration_rate_log_likelihood(
         migration_rates=migration_rates,
@@ -835,6 +840,7 @@ def run_for_single(
         parents=pl,
         branch_above=bal,
         time_bin_widths=tbw,
+        ids_asc_time=iat,
         roots=r,
         branch_lengths=ubl,
         output_file=output_file
@@ -869,9 +875,9 @@ def run(
             tree = nx_bin_ts(tree, time_bins)
         trees.append(tree.first())
 
-    pl, bal, tbw, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)  # needed to use numba
+    pl, bal, tbw, iat, r, ubl = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)  # needed to use numba
 
-    bounds = [(-10, 5) for rate in world_map.existing_connection_types]
+    bounds = [(-10, 0) for rate in world_map.existing_connection_types]
 
     res = shgo(
         calc_log_migration_rate_log_likelihood,
@@ -879,7 +885,7 @@ def run(
         n=100,
         iters=max(5, len(bounds)),
         sampling_method="sobol",
-        args=(world_map, pl, bal, tbw, r, ubl, output_file)
+        args=(world_map, pl, bal, tbw, iat, r, ubl, output_file)
     )
 
     if output_file is not None:

@@ -22,7 +22,7 @@ import numpy as np
 print(tct.run(
     demes_path="dataset/demes.tsv",
     samples_path="dataset/samples.tsv",
-    trees_dir_path="dataset/0.01_0.01_0.01_0.01",
+    trees_dir_path="dataset/0.01_0.001_0.0001_0.00001",
     time_bins=[0]+[10**i for i in range(0,10)],
     asymmetric=True
 ))

@@ -27,6 +27,17 @@ pruning<-function(q,tree,x,model=NULL,...){
       PP[j,]<-P%*%L[pw$edge[ee[j],2],]
     }
     L[nn[i],]<-apply(PP,2,prod)
+    #if (ee[1] == 105) {
+    #  print(ee)
+    #  print(pw$edge[ee[1],])
+    #  print(L[pw$edge[ee[1],2],])
+    #  print(pw$edge.length[ee[1]])
+    #  print(pw$edge[ee[2],])
+    #  print(L[pw$edge[ee[2],2],])
+    #  print(pw$edge.length[ee[2]])
+    #  print(P)
+    #  print(PP)
+    #}
   }
   prob<-log(sum(pi*L[nn[i],]))
   if(return=="likelihood") prob
@@ -53,10 +64,16 @@ model<-matrix(c(0,1,2,0),2,2,byrow=TRUE)
 fitted<-optim(c(1,1),pruning,tree=eel.tree,x=feeding_mode,
               model=model,method="L-BFGS-B",lower=1e-12,
               control=list(fnscale=-1))
+
 fitted
+
+pruning(q=c(0.2, 0.4), tree=eel.tree, x=feeding_mode, model=model)
 
 
 fitMk(eel.tree,feeding_mode,model="ARD")
+
+
+write.csv(eel.data, file="/Users/jameskitchens/Documents/GitHub/terracotta/devlog/20251029/assets/phytools_comparison/feeding_mode.csv")
 
 
 

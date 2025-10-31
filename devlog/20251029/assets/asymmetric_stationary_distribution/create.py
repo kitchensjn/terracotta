@@ -20,11 +20,12 @@ tct.create_trees_files(
     samples_path="dataset/samples.tsv",
     number_of_trees=1000,
     pop_size=50,
-    asymmetric=False,
+    asymmetric=True,
     migration_rates={
         0:0.01,
-        1:0.01,
-        2:0.01
+        1:0.001,
+        2:0.0001,
+        3:0.00001
     },
     output_directory="dataset"
 )
