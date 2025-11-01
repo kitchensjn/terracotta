@@ -6,7 +6,6 @@ pruning<-function(q,tree,x,model=NULL,...){
   if(hasArg(return)) return<-list(...)$return
   else return<-"likelihood"
   pw<-reorder(tree,"postorder")
-  print(pw)
   k<-length(levels(x))
   if(is.null(model)){
     model<-matrix(1,k,k)
@@ -14,13 +13,16 @@ pruning<-function(q,tree,x,model=NULL,...){
   }
   if(hasArg(pi)) pi<-list(...)$pi
   else pi<-rep(1/k,k)
+  pi<-c(0.5, 0.1)
   Q<-matrix(0,k,k)
   Q[]<-c(0,q)[model+1]
   diag(Q)<--rowSums(Q)
   L<-rbind(to.matrix(x[pw$tip.label],levels(x)),
            matrix(0,tree$Nnode,k,dimnames=
                     list(1:tree$Nnode+Ntip(tree))))
+  print(L)
   nn<-unique(pw$edge[,1])
+  print(pw$edge)
   for(i in 1:length(nn)){
     ee<-which(pw$edge[,1]==nn[i])
     PP<-matrix(NA,length(ee),k)
@@ -52,9 +54,19 @@ legend("topleft",levels(feeding_mode),pch=21,pt.cex=2,
 
 
 model<-matrix(c(0,1,2,0),2,2,byrow=TRUE)
-fitted<-optim(c(1,1),pruning,tree=eel.tree,x=feeding_mode,
-              model=model,method="L-BFGS-B",lower=1e-12,
-              control=list(fnscale=-1))
+#fitted<-optim(c(1,1),pruning,tree=eel.tree,x=feeding_mode,
+#              model=model,method="L-BFGS-B",lower=1e-12,
+#              control=list(fnscale=-1))
+
+
+pruning(
+  q=c(0.01, 0.05),
+  tree=eel.tree,
+  x=feeding_mode,
+  model=model
+)
+
+
 
 asr<-function(q,tree,L,model=NULL){
   pw<-reorder(tree,"postorder")
@@ -100,10 +112,10 @@ asr<-function(q,tree,L,model=NULL){
 }
 
 ## now get our conditional likelihood, fixing Q
-L<-pruning(c(0.01, 0.01),eel.tree,feeding_mode,model=model,
+L<-pruning(c(0.01, 0.05),eel.tree,feeding_mode,model=model,
            return="conditional")
 ## finally, perform our ancestral state reconstruction
-eel_asr<-asr(c(0.01, 0.01),eel.tree,L,model=model)
+eel_asr<-asr(c(0.01, 0.05),eel.tree,L,model=model)
 
 eel_asr
 
