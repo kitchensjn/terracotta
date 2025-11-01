@@ -1334,6 +1334,35 @@ def locate_nodes_revell_messages(
 
 
 
+def _new_deconstruct_tree(tree, epochs, time_bins=None):
+    num_nodes = len(tree.postorder())
+    parents = np.full(num_nodes, -1, dtype="int64")
+    branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
+    time_bin_widths = np.full(num_nodes, -1, dtype="int64")
+    ids_asc_time = np.full(num_nodes, -1, dtype="int64")
+    for i,node in enumerate(tree.nodes(order="timeasc")):
+        node_time = tree.time(node)
+        parent = tree.parent(node)
+        if parent != -1:
+            parent_time = tree.time(parent)
+            starting_epoch = np.digitize(node_time, epochs)-1
+            ending_epoch = np.digitize(parent_time, epochs)-1
+            if starting_epoch == ending_epoch:
+                branch_above[starting_epoch, node] = math.ceil(parent_time - node_time)
+            else:
+                branch_above[starting_epoch, node] = math.ceil(epochs[starting_epoch+1] - node_time)
+                for e in range(starting_epoch+1, ending_epoch):
+                    branch_above[e, node] = epochs[e+1] - epochs[e]
+                branch_above[ending_epoch, node] = math.ceil(parent_time - epochs[ending_epoch])
+        ids_asc_time[i] = node
+        parents[node] = parent
+        if time_bins is not None:
+            i = next(j for j, e in enumerate(time_bins) if e >= node_time)
+            width = max(1, time_bins[i] - time_bins[i - 1])
+            time_bin_widths[node] = width
+        else:
+            time_bin_widths[node] = 1
+    return parents, branch_above, time_bin_widths, ids_asc_time
 
 def _new_deconstruct_trees(trees, epochs, time_bins=None):
     """
@@ -1346,30 +1375,35 @@ def _new_deconstruct_trees(trees, epochs, time_bins=None):
     bal = []
     tbw = []
     iat = []
+    all_branch_lengths = [[] for e in epochs]
     for tree in trees:
-        parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, epochs, time_bins=time_bins)
+        parents, branch_above, time_bin_widths, ids_asc_time = _new_deconstruct_tree(tree, epochs, time_bins=time_bins)
         pl.append(parents)
         bal.append(branch_above)
         tbw.append(time_bin_widths)
         iat.append(ids_asc_time)
-    return pl, bal, tbw, iat
+        for e in range(len(epochs)):
+            all_branch_lengths[e].extend(branch_above[e])
+    unique_branch_lengths = []
+    for e in range(len(epochs)):
+        unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
+    return pl, bal, tbw, iat, unique_branch_lengths
 
-
-
+@njit()
 def _likelihood_of_tree(
         parents,
         branch_above,
+        unique_branch_lengths,
         time_bin_widths,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices
+        transition_matrices,
+        precomputed_transitions
     ):
 
     num_demes = len(sample_locations_array[0])
-
     messages = np.zeros((len(parents), num_demes), dtype="float64")
-
     composite_across_roots = 0
     for id in ids_asc_time: 
         if id in sample_ids:
@@ -1383,38 +1417,42 @@ def _likelihood_of_tree(
         if parent != -1:
             bl = branch_above[:,id]
             included_epochs = np.where(bl > 0)[0]
+            P = np.eye(num_demes)
             if (len(included_epochs) > 0):
-                P = np.eye(num_demes)
                 for epoch in included_epochs:
-                    P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
-                messages[id] = np.dot(P, current_pos)
-            else:
-                messages[id] = current_pos
+                    bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
+                    P = np.dot(P, precomputed_transitions[epoch][bl_index])
+            messages[id] = np.dot(P, current_pos)
         else:   # collect roots here
             stationary = 1/num_demes
             composite_across_roots += np.log(np.sum(stationary*current_pos))
     return composite_across_roots
 
+@njit(parallel=True)
 def _process_trees(
         parents,
         branch_above,
+        unique_branch_lengths,
         time_bin_widths,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices
+        transition_matrices,
+        precomputed_transitions
     ):
 
     composite_likelihood = 0
-    for i in range(len(branch_above)):
+    for i in prange(len(branch_above)):
         composite_likelihood += _likelihood_of_tree(
             parents=parents[i],
             branch_above=branch_above[i],
+            unique_branch_lengths=unique_branch_lengths,
             time_bin_widths=time_bin_widths[i],
             ids_asc_time=ids_asc_time[i],
             sample_locations_array=sample_locations_array,
             sample_ids=sample_ids,
-            transition_matrices=transition_matrices
+            transition_matrices=transition_matrices,
+            precomputed_transitions=precomputed_transitions
         )
     return composite_likelihood
 
@@ -1423,6 +1461,7 @@ def _calc_composite_likelihood(
         world_map,
         parents,
         branch_above,
+        unique_branch_lengths,
         time_bin_widths,
         ids_asc_time,
         sample_locations_array,
@@ -1430,6 +1469,11 @@ def _calc_composite_likelihood(
     ):
 
     transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    precomputed_transitions = precalculate_transitions(
+        branch_lengths=unique_branch_lengths,
+        transition_matrices=transition_matrices
+    )
 
     # https://people.duke.edu/~ccc14/sta-663-2016/homework/Homework02_Solutions.html
     eigenvalues, eigenvectors = np.linalg.eig(transition_matrices[-1].T)
@@ -1441,11 +1485,13 @@ def _calc_composite_likelihood(
     composite_likelihood = _process_trees(
         parents=parents,
         branch_above=branch_above,
+        unique_branch_lengths=unique_branch_lengths,
         time_bin_widths=time_bin_widths,
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
         sample_ids=sample_ids,
-        transition_matrices=transition_matrices
+        transition_matrices=transition_matrices,
+        precomputed_transitions=precomputed_transitions
     )
     return composite_likelihood
 
@@ -1477,13 +1523,14 @@ def run_on_trees(
         trees.append(tree.first())
 
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
-    parents, branch_above, time_bin_widths, ids_asc_time = _new_deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
+    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _new_deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
 
     comp_like = _calc_composite_likelihood(
         migration_rates=migration_rates,
         world_map=world_map,
         parents=parents,
         branch_above=branch_above,
+        unique_branch_lengths=unique_branch_lengths,
         time_bin_widths=time_bin_widths,
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
