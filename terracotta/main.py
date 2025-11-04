@@ -687,7 +687,8 @@ def _calc_composite_likelihood_for_log_rates(
         time_bin_widths,
         ids_asc_time,
         sample_locations_array,
-        sample_ids
+        sample_ids,
+        output_file=None
     ):
 
     return _calc_composite_likelihood_for_rates(
@@ -699,7 +700,8 @@ def _calc_composite_likelihood_for_log_rates(
         time_bin_widths=time_bin_widths,
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
-        sample_ids=sample_ids
+        sample_ids=sample_ids,
+        output_file=output_file
     )
 
 def _calc_composite_likelihood_for_rates(
@@ -711,7 +713,8 @@ def _calc_composite_likelihood_for_rates(
         time_bin_widths,
         ids_asc_time,
         sample_locations_array,
-        sample_ids
+        sample_ids,
+        output_file=None
     ):
 
     transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
@@ -738,10 +741,14 @@ def _calc_composite_likelihood_for_rates(
         precomputed_transitions=precomputed_transitions,
         stationary_distribution=stationary_distribution
     )
-    print(migration_rates, -composite_likelihood)
+    if output_file is not None:
+        with open(output_file, "a") as outfile:
+            outfile.write(f"{migration_rates}\t{-composite_likelihood}\n")
+    else:
+        print(migration_rates, -composite_likelihood)
     return composite_likelihood
 
-def run_for_rates(
+def run_for_rate_combo(
         migration_rates,
         demes_path,
         samples_path,
@@ -787,8 +794,13 @@ def run(
         trees_dir_path,
         time_bins=None,
         asymmetric=False,
+        output_file=None
     ):
     
+    if output_file is not None:
+        with open(output_file, "w") as outfile:
+            outfile.write("rates\tloglikelihood\n")
+
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
     world_map = WorldMap(demes, samples, asymmetric)
@@ -822,7 +834,8 @@ def run(
             time_bin_widths,
             ids_asc_time,
             sample_locations_array,
-            sample_ids
+            sample_ids,
+            output_file
         )
     )
 
@@ -851,19 +864,18 @@ def locate(
 
     return locs
 
-    
 
-def locate_nodes_in_tree(
-        tree,
-        world_map,
-        migration_rates
+def _get_messages(
+        parents,
+        branch_above,
+        time_bin_widths,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        transition_matrices
     ):
 
-    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
-
-    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
-    
-    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+    num_demes = len(sample_locations_array[0])
 
     messages = {}
 
@@ -872,7 +884,7 @@ def locate_nodes_in_tree(
             current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
         else:
             children = np.where(parents==id)[0]
-            incoming_messages = np.zeros((len(children), len(world_map.demes)))
+            incoming_messages = np.zeros((len(children), num_demes))
             for j,child in enumerate(children):
                 incoming_messages[j] = messages[(child, id)]
             current_pos = np.prod(incoming_messages, axis=0)
@@ -881,7 +893,7 @@ def locate_nodes_in_tree(
             bl = branch_above[:,id]
             included_epochs = np.where(bl > 0)[0]
             if (len(included_epochs) > 0):
-                P = np.eye(len(world_map.demes))
+                P = np.eye(num_demes)
                 for epoch in included_epochs:
                     P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
                 messages[(id, parent)] = np.dot(P, current_pos)
@@ -897,19 +909,43 @@ def locate_nodes_in_tree(
                     current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
                 else:
                     incoming_keys_filtered = [key for key in incoming_keys if key[0] != child]
-                    incoming_messages = np.zeros((len(incoming_keys_filtered), len(world_map.demes)))
+                    incoming_messages = np.zeros((len(incoming_keys_filtered), num_demes))
                     for j,key in enumerate(incoming_keys_filtered):
                         incoming_messages[j] = messages[key]
                     current_pos = np.prod(incoming_messages, axis=0)
                 bl = branch_above[:,child]
                 included_epochs = np.where(bl > 0)[0]
                 if (len(included_epochs) > 0):
-                    P = np.eye(len(world_map.demes))
+                    P = np.eye(num_demes)
                     for epoch in included_epochs:
                         P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
                     messages[(id, child)] = np.dot(current_pos, P)
                 else:
                     messages[(id, child)] = current_pos
+    return messages
+
+
+def locate_nodes_in_tree(
+        tree,
+        world_map,
+        migration_rates
+    ):
+
+    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
+    
+    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+
+    messages = _get_messages(
+        parents=parents,
+        branch_above=branch_above,
+        time_bin_widths=time_bin_widths,
+        ids_asc_time=ids_asc_time,
+        sample_locations_array=sample_locations_array,
+        sample_ids=sample_ids,
+        transition_matrices=transition_matrices
+    )
     
     L = np.zeros((len(parents), len(world_map.demes)))
     for id in ids_asc_time:
@@ -924,4 +960,140 @@ def locate_nodes_in_tree(
         L[id] = current_pos
 
     L = L/L.sum(axis=1, keepdims=True)
+    return L
+
+
+def ancs(tree, u):
+    """Find all of the ancestors above a node for a tree
+
+    Taken directly from https://github.com/tskit-dev/tskit/issues/2706
+
+    Parameters
+    ----------
+    tree : tskit.Tree
+    u : int
+        The ID for the node of interest
+
+    Returns
+    -------
+    An iterator over the ancestors of u in this tree
+    """
+
+    u = tree.parent(u)
+    while u != -1:
+         yield u
+         u = tree.parent(u)
+
+
+def track_lineage_in_tree(
+        node,
+        times,
+        tree,
+        world_map,
+        migration_rates
+    ):
+
+    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
+    
+    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+
+    messages = _get_messages(
+        parents=parents,
+        branch_above=branch_above,
+        time_bin_widths=time_bin_widths,
+        ids_asc_time=ids_asc_time,
+        sample_locations_array=sample_locations_array,
+        sample_ids=sample_ids,
+        transition_matrices=transition_matrices
+    )
+
+    ancestors = [node] + list(ancs(tree=tree, u=node))
+
+    node_times = []
+    for a in ancestors:
+        node_times.append(int(tree.time(a)))
+
+    pc_combos = []
+    for t in times:
+        for i,v in enumerate(node_times):
+            if v > t:
+                child = ancestors[i-1]
+                parent = ancestors[i]
+                break
+            elif v == t:
+                child = ancestors[i]
+                parent = ancestors[i]
+                break
+        pc_combos.append((child, parent))
+
+    L = np.zeros((len(pc_combos), len(world_map.demes)))
+    for element,node_combo in enumerate(pc_combos):
+        if node_combo[0] == node_combo[1]:
+            if node_combo[0] in sample_ids:
+                node_pos = sample_locations_array[np.where(sample_ids==node_combo[0])[0][0]]
+            else:
+                incoming_keys = [key for key in messages.keys() if key[1] == node_combo[0]]
+                incoming_messages = np.zeros((len(incoming_keys), len(world_map.demes)))
+                for j,key in enumerate(incoming_keys):
+                    incoming_messages[j] = messages[key]
+                node_pos = np.prod(incoming_messages, axis=0)
+        else:
+            if node_combo[0] in sample_ids:
+                child_pos = sample_locations_array[np.where(sample_ids==node_combo[0])[0][0]]
+            else:
+                incoming_keys_child = [key for key in messages.keys() if key[1] == node_combo[0]]
+                incoming_messages_child = np.array([messages[income] for income in incoming_keys_child if income[0] != node_combo[1]])
+                if len(incoming_messages_child) > 0:
+                    child_pos = np.prod(incoming_messages_child, axis=0)
+                else:
+                    print(f"Node {node_combo[0]} does not have incoming messages. Potential error?")
+                    child_pos = np.ones((1,len(world_map.demes)))[0]
+            if node_combo[1] in sample_ids:
+                child_pos = sample_locations_array[np.where(sample_ids==node_combo[1])[0][0]]
+            else:
+                incoming_keys_parent = [key for key in messages.keys() if key[1] == node_combo[1]]
+                incoming_messages_parent = np.array([messages[income] for income in incoming_keys_parent if income[0] != node_combo[0]])
+                if len(incoming_messages_parent) > 0:
+                    parent_pos = np.prod(incoming_messages_parent, axis=0)
+                else:
+                    print(f"Node {node_combo[0]} does not have incoming messages. Potential error?")
+                    parent_pos = np.ones((1,len(world_map.demes)))[0]
+            
+            branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
+            bl_child = branch_above[:, node_combo[0]].copy()
+            bl_parent = bl_child.copy()
+            whats_left = branch_length_to_child
+            for e in range(len(world_map.epochs)):
+                current = bl_parent[e].copy()
+                if current >= whats_left:
+                    bl_parent[e] -= whats_left
+                else:
+                    bl_parent[e] = 0
+                whats_left -= current
+            bl_child -= bl_parent
+
+            included_epochs = np.where(bl_child > 0)[0]
+            outgoing_child_message = child_pos
+            if (len(included_epochs) > 0):
+                P = np.eye(len(world_map.demes))
+                for epoch in included_epochs:
+                    P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl_child[epoch]))
+                outgoing_child_message = np.dot(P, child_pos)
+
+            included_epochs = np.where(bl_parent > 0)[0]
+            outgoing_parent_message = parent_pos
+            if (len(included_epochs) > 0):
+                P = np.eye(len(world_map.demes))
+                for epoch in included_epochs:
+                    P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl_parent[epoch]))
+                outgoing_parent_message = np.dot(parent_pos, P)
+            
+            node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
+
+        L[element] = node_pos
+
+    L = L/L.sum(axis=1, keepdims=True)
+    
     return L
