@@ -20,7 +20,7 @@ world_map.draw(
 )
 
 
-### This is currently slow with the example dataset. Likely to change
+### Underflow issues with current example dataset. Will need to update in the future!
 
 result, log_likelihood = tct.run(
     demes_path="demes.tsv",
