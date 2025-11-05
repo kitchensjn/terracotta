@@ -322,7 +322,7 @@ class WorldMap:
                     counts = self.samples["deme"].value_counts().reset_index()
                     counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
                     axs[e//ncols, e%ncols].scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
-                elif color_demes:
+                if color_demes:
                     deme_types_at_time = self.get_all_deme_types_at_time(times[e])
                     axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
                 #else:

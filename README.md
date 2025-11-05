@@ -50,69 +50,33 @@ Here, demes have been colored according to their type set by `demes.tsv`. Orange
 
 #### Estimate the most likely migration surface
 
-`terracotta` uses `numba` to speed up the likelihood calculations, but `numba` does not know how to handle a `tskit.Tree`. We first need to break each tree down into a simpler format **(very likely for this format to change in the future)**.
-
 ```
-import numpy as np
-
-cl = []
-bal = []
-r = []
-for tree in trees:
-    child_list, branch_above_list, roots = tct.convert_tree_to_tuple_list(tree)
-    cl.append(child_list)
-    bal.append(branch_above_list)
-    r.append(roots)
-
-total_number_of_edges = 0
-for tree in trees:
-    total_number_of_edges += tree.num_edges+1
-branch_lengths = np.zeros(total_number_of_edges, dtype="int64")
-edge_counter = 0
-for tree in trees:
-    for node in tree.nodes(order="timeasc"):
-        branch_lengths[edge_counter] = int(tree.branch_length(node))
-        edge_counter += 1
-branch_lengths = np.unique(np.array(branch_lengths))
-```
-
-The following code uses a hill-climbing algorithm to identify the most likely migration surface based on the provided trees; this may take multiple minutes to run: 
-
-```
-from scipy.optimize import minimize
-
-mr = np.array([4.32e-03, 4.95e-02, 0])
-
-print(
-    minimize(
-        tct.calc_migration_rate_log_likelihood,
-        mr,
-        method="nelder-mead",
-        bounds=[(0, 1), (0, 1), (0, 1)],
-        args=(world_map, cl, bal, r, branch_lengths)
-    )
+result, log_likelihood = tct.run(
+    demes_path="demes.tsv",
+    samples_path="samples.tsv",
+    trees_dir_path="trees",
+    asymmetric=True,
+    output_file="results.txt"
 )
 ```
+
+`terracotta` uses a global optimization algorithm (SHGO) to locate the most likely migration surface given your set deme types.
 
 #### Tracking a lineage over time
 
 To track a lineage over time you need to estimate the location of the lineage at specified time points within the tree.
 
 ```
-positions = tct.track_lineage_over_time(
-    sample=1500,
-    times=range(0,11000,1000),
+locations = tct.track_lineage_in_tree(
+    node=0,
+    times=range(0,100,10),
     tree=trees[0],
     world_map=world_map,
-    migration_rates=mr
+    migration_rates=result
 )
 
-for time in range(0, 11000, 1000):
-    world_map.draw_estimated_location(
-        location_vector=positions[time],
-        figsize=(15,15),
-        title=f"{time} generations in past"
-    )
+for i,time in enumerate(range(0, 100, 10)):
+    world_map.draw(figsize=(5,5), location_vector=locations[i], title=f"{time} generations ago")
 ```
 
 ### Map Builder

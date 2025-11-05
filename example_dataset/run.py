@@ -19,50 +19,13 @@ world_map.draw(
     show_samples=True
 )
 
-cl = []
-bal = []
-r = []
-for tree in trees:
-    child_list, branch_above_list, roots = tct.convert_tree_to_tuple_list(tree)
-    cl.append(child_list)
-    bal.append(branch_above_list)
-    r.append(roots)
 
-total_number_of_edges = 0
-for tree in trees:
-    total_number_of_edges += tree.num_edges+1
-branch_lengths = np.zeros(total_number_of_edges, dtype="int64")
-edge_counter = 0
-for tree in trees:
-    for node in tree.nodes(order="timeasc"):
-        branch_lengths[edge_counter] = int(tree.branch_length(node))
-        edge_counter += 1
-branch_lengths = np.unique(np.array(branch_lengths))
+### This is currently slow with the example dataset. Likely to change
 
-mr = np.array([2.5e-03, 4e-02, 0])
-
-print(
-    minimize(
-        tct.calc_migration_rate_log_likelihood,
-        mr,
-        method="nelder-mead",
-        bounds=[(0, 1), (0, 1), (0, 1)],
-        args=(world_map, cl, bal, r, branch_lengths)
-    )
+result, log_likelihood = tct.run(
+    demes_path="demes.tsv",
+    samples_path="samples.tsv",
+    trees_dir_path="trees",
+    asymmetric=True,
+    output_file="results.txt"
 )
-exit()
-
-positions = tct.track_lineage_over_time(
-    sample=1500,
-    times=range(0,11000,1000),
-    tree=trees[0],
-    world_map=world_map,
-    migration_rates=mr
-)
-
-for time in range(0, 11000, 1000):
-    world_map.draw_estimated_location(
-        location_vector=positions[time],
-        figsize=(15,15),
-        title=f"{time} generations in past"
-    )
