@@ -24,6 +24,11 @@ def _calc_optimal_organization_of_suplots(num_plots):
     nrows = math.ceil(num_plots/ncols)
     return nrows, ncols
 
+@njit()
+def logsumexp_custom(x, axis):
+    c = np.max(x)
+    return c + np.log(np.sum(np.exp(x - c), axis=axis))
+
 class WorldMap:
     """Stores a map of the demes
 
@@ -313,12 +318,13 @@ class WorldMap:
                             color = connection_colors[np.where(self.existing_connection_types==row["type"])[0][0]]
                         else:
                             color="grey"
-                        axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
+                        #axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
+                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
                     else:
                         axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
                 if location_vector is not None:
-                    plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=50)
-                if isinstance(self.samples, pd.DataFrame) and show_samples:
+                    plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=25)
+                if (e == 0) and isinstance(self.samples, pd.DataFrame) and show_samples:
                     counts = self.samples["deme"].value_counts().reset_index()
                     counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
                     axs[e//ncols, e%ncols].scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
@@ -335,9 +341,11 @@ class WorldMap:
             axs[e//ncols, e%ncols].axis("off")
 
         if save_to != None:
-            plt.savefig(save_to)
+            plt.savefig(save_to, dpi=300)
         if show:
             plt.show()
+        else:
+            plt.close()
 
     def build_transition_matrices(self, migration_rates):
         """Builds the transition matrix based on the world map and migration rates
@@ -613,6 +621,92 @@ def _deconstruct_trees(trees, epochs, time_bins=None):
     return pl, bal, tbw, iat, unique_branch_lengths
 
 @njit()
+def _likelihood_of_tree_log_faster(
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        time_bin_widths,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        precomputed_transitions,
+        stationary_distribution_log
+    ):
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.zeros((len(parents), num_demes), dtype="float64")
+    composite_across_roots = 0
+    for id in ids_asc_time:
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+            current_pos[current_pos <= 1e-99] = 1e-99
+            current_pos = np.log(current_pos)
+        else:
+            children = np.where(parents==id)[0]
+            current_pos = np.zeros(num_demes, dtype="float64")
+            for child in children:
+                current_pos += messages[child]
+        parent = parents[id]
+        if parent != -1:
+            bl = branch_above[:,id]
+            included_epochs = np.where(bl > 0)[0]
+            P = np.eye(num_demes)
+            if (len(included_epochs) > 0):
+                for epoch in included_epochs:
+                    bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
+                    P = np.dot(P, precomputed_transitions[epoch][bl_index])
+            #P[P <= 1e-99] = 1e-99 THIS LINE DOES NOT WORK WITH @njit(). Without it, every deme must be commutable (limits asymmetric)
+            P = np.log(P)
+            messages[id] = logsumexp_custom(P + current_pos, axis=1)
+        else:   # collect roots here
+            composite_across_roots += logsumexp_custom(stationary_distribution_log + current_pos, axis=0)
+    return composite_across_roots
+
+@njit()
+def _likelihood_of_tree_log(
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        time_bin_widths,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        precomputed_transitions,
+        stationary_distribution
+    ):
+
+    stationary_distribution[stationary_distribution <= 1e-99] = 1e-99
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.zeros((len(parents), num_demes), dtype="float64")
+    composite_across_roots = 0
+    for id in ids_asc_time:
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+            current_pos[current_pos <= 1e-99] = 1e-99
+            current_pos = np.log(current_pos)
+        else:
+            children = np.where(parents==id)[0]
+            current_pos = np.zeros(num_demes, dtype="float64")
+            for child in children:
+                current_pos += messages[child]
+        parent = parents[id]
+        if parent != -1:
+            bl = branch_above[:,id]
+            included_epochs = np.where(bl > 0)[0]
+            P = np.eye(num_demes)
+            if (len(included_epochs) > 0):
+                for epoch in included_epochs:
+                    bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
+                    P = np.dot(P, precomputed_transitions[epoch][bl_index])
+            P[P <= 1e-99] = 1e-99
+            P = np.log(P)
+            messages[id] = logsumexp_custom(P + current_pos, axis=1)
+        else:   # collect roots here
+            composite_across_roots += logsumexp_custom(np.log(stationary_distribution) + current_pos, axis=0)
+    return composite_across_roots
+
+@njit()
 def _likelihood_of_tree(
         parents,
         branch_above,
@@ -650,7 +744,6 @@ def _likelihood_of_tree(
             composite_across_roots += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
     return composite_across_roots
 
-@njit(parallel=True)
 def _process_trees(
         parents,
         branch_above,
@@ -660,12 +753,13 @@ def _process_trees(
         sample_locations_array,
         sample_ids,
         precomputed_transitions,
-        stationary_distribution
+        stationary_distribution,
+        stationary_distribution_log
     ):
 
     composite_likelihood = 0
     for i in prange(len(branch_above)):
-        composite_likelihood += _likelihood_of_tree(
+        composite_likelihood += _likelihood_of_tree_log_faster(
             parents=parents[i],
             branch_above=branch_above[i],
             unique_branch_lengths=unique_branch_lengths,
@@ -674,7 +768,7 @@ def _process_trees(
             sample_locations_array=sample_locations_array,
             sample_ids=sample_ids,
             precomputed_transitions=precomputed_transitions,
-            stationary_distribution=stationary_distribution
+            stationary_distribution_log=stationary_distribution_log
         )
     return abs(composite_likelihood)
 
@@ -729,6 +823,8 @@ def _calc_composite_likelihood_for_rates(
     idx = np.argmin(np.abs(eigenvalues - 1))
     w = np.real(eigenvectors[:, idx]).T
     stationary_distribution = w/np.sum(w)
+    stationary_distribution[stationary_distribution <= 1e-99] = 1e-99
+    stationary_distribution_log = np.log(stationary_distribution)
 
     composite_likelihood = _process_trees(
         parents=parents,
@@ -739,7 +835,8 @@ def _calc_composite_likelihood_for_rates(
         sample_locations_array=sample_locations_array,
         sample_ids=sample_ids,
         precomputed_transitions=precomputed_transitions,
-        stationary_distribution=stationary_distribution
+        stationary_distribution=stationary_distribution,
+        stationary_distribution_log=stationary_distribution_log
     )
     if output_file is not None:
         with open(output_file, "a") as outfile:
@@ -1051,7 +1148,7 @@ def track_lineage_in_tree(
                     print(f"Node {node_combo[0]} does not have incoming messages. Potential error?")
                     child_pos = np.ones((1,len(world_map.demes)))[0]
             if node_combo[1] in sample_ids:
-                child_pos = sample_locations_array[np.where(sample_ids==node_combo[1])[0][0]]
+                parent_pos = sample_locations_array[np.where(sample_ids==node_combo[1])[0][0]]
             else:
                 incoming_keys_parent = [key for key in messages.keys() if key[1] == node_combo[1]]
                 incoming_messages_parent = np.array([messages[income] for income in incoming_keys_parent if income[0] != node_combo[0]])
