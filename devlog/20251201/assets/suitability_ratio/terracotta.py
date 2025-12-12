@@ -6,7 +6,7 @@ from scipy import linalg
 import matplotlib as mpl
 import networkx as nx
 import tskit
-from numba import jit, njit, prange
+from numba import njit, prange
 from collections import Counter
 import math
 from scipy.optimize import shgo
@@ -43,7 +43,7 @@ class WorldMap:
         All possible connection types, even if not observed in the map
     """
 
-    def __init__(self, demes, samples=None, asymmetric=False):
+    def __init__(self, demes, samples=None):
         """Initializes the WorldMap object
 
         Parameters
@@ -90,7 +90,7 @@ class WorldMap:
                 if epoch_assignment not in epochs:
                     epochs.append(epoch_assignment)
             for type_assignment in epoch_formatter[1::2]:
-                type_assignment = int(type_assignment)
+                type_assignment = type_assignment
                 if type_assignment not in deme_types:
                     deme_types.append(type_assignment)
         self.epochs = np.sort(epochs)
@@ -98,21 +98,6 @@ class WorldMap:
 
         self.deme_types = deme_types
 
-        self.asymmetric = asymmetric
-        
-        connection_types = []
-        if self.asymmetric:
-            for type0 in deme_types:
-                for type1 in deme_types:
-                    connection_types.append((type0, type1))
-        else:
-            for i,type0 in enumerate(deme_types):
-                for type1 in deme_types[i:]:
-                    connection_types.append((type0, type1))
-
-        self.all_connection_types = np.array(connection_types)
-
-        existing_connections = []
         connections = []
         for time_period in self.epochs:
             epoch_connections = []
@@ -122,19 +107,11 @@ class WorldMap:
                 for neighbor in neighbors:
                     neighbor = int(neighbor)
                     neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
-                    if self.asymmetric:
-                        ct = connection_types.index((row_type, neighbor_type))
-                    else:
-                        if (row_type > neighbor_type):
-                            ct = connection_types.index((neighbor_type, row_type))
-                        else:
-                            ct = connection_types.index((row_type, neighbor_type))
-                    existing_connections.append(ct)
+                    ct = neighbor_type / row_type
                     epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
             epoch_connections = pd.DataFrame(epoch_connections)
             connections.append(epoch_connections)
         self.connections = connections
-        self.existing_connection_types = np.unique(np.array(existing_connections))
 
     def get_coordinates_of_deme(self, id):
         """Gets x and y coordinates for specified deme
@@ -187,7 +164,7 @@ class WorldMap:
 
         Returns
         -------
-        deme_type : int
+        deme_type : float
             Type of deme
         """
 
@@ -198,8 +175,8 @@ class WorldMap:
             start = int(details[0])
             end = int(epochs[t+1].split(":")[0])
             if (time >= start) and (time < end):
-                return int(details[1])
-        return int(epochs[-1].split(":")[1])
+                return float(details[1])
+        return float(epochs[-1].split(":")[1])
     
     def get_all_deme_types_at_time(self, time):
         """
@@ -276,12 +253,6 @@ class WorldMap:
         else:
             times = [0]
             nrows, ncols = 1, 1
-            
-        if color_connections:
-            num_connection_types = len(self.existing_connection_types)
-            color_rnd = random.Random()
-            color_rnd.seed(1)
-            connection_colors = ["#"+''.join([color_rnd.choice("0123456789ABCDEF") for j in range(6)]) for i in range(num_connection_types)]
 
         fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
 
@@ -290,38 +261,42 @@ class WorldMap:
         elif nrows == 1:
             axs = np.array([axs])
 
+        np.unique(np.array(existing_connections))
+
+        cts = self.connections["type"]
+        max_ct = max(cts)
+        min_ct = min(cts)
+
         for e in range(nrows*ncols):
             if e < len(times):
                 for _,row in self.connections[e].iterrows():
                     deme_0 = self.get_coordinates_of_deme(row["deme_0"])
                     deme_1 = self.get_coordinates_of_deme(row["deme_1"])
 
-                    if self.asymmetric:
-                        dx = deme_1[0]-deme_0[0]
-                        dy = deme_1[1]-deme_0[1]
-                        length_of_line = math.sqrt(dx**2 + dy**2)
-                        angle_rad = math.atan2(dy, dx)
-                        shift_along_x = math.cos(angle_rad) * (length_of_line*0.2)
-                        shift_along_y = math.sin(angle_rad) * (length_of_line*0.2)
-                        angle_deg = math.degrees(angle_rad)
-                        perp_angle_rad = math.atan2(-dx, dy)
-                        shift_perp_x = math.cos(perp_angle_rad) * 0.1
-                        shift_perp_y = math.sin(perp_angle_rad) * 0.1
-                        if (angle_deg >= 0) and (angle_deg < 180):
-                            x = deme_0[0] + shift_along_x + shift_perp_x
-                            y = deme_0[1] + shift_along_y + shift_perp_y
-                        else:
-                            x = deme_0[0] + shift_along_x + shift_perp_x
-                            y = deme_0[1] + shift_along_y + shift_perp_y
-
-                        if color_connections:
-                            color = connection_colors[np.where(self.existing_connection_types==row["type"])[0][0]]
-                        else:
-                            color="grey"
-                        #axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
-                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
+                    dx = deme_1[0]-deme_0[0]
+                    dy = deme_1[1]-deme_0[1]
+                    length_of_line = math.sqrt(dx**2 + dy**2)
+                    angle_rad = math.atan2(dy, dx)
+                    shift_along_x = math.cos(angle_rad) * (length_of_line*0.2)
+                    shift_along_y = math.sin(angle_rad) * (length_of_line*0.2)
+                    angle_deg = math.degrees(angle_rad)
+                    perp_angle_rad = math.atan2(-dx, dy)
+                    shift_perp_x = math.cos(perp_angle_rad) * 0.1
+                    shift_perp_y = math.sin(perp_angle_rad) * 0.1
+                    if (angle_deg >= 0) and (angle_deg < 180):
+                        x = deme_0[0] + shift_along_x + shift_perp_x
+                        y = deme_0[1] + shift_along_y + shift_perp_y
                     else:
-                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="grey")
+                        x = deme_0[0] + shift_along_x + shift_perp_x
+                        y = deme_0[1] + shift_along_y + shift_perp_y
+
+                    if color_connections:
+                        rescaled = ((row["type"]-min_ct)/(max_ct-min_ct))
+                        color = colorFader("black", "pink", rescaled)
+                    else:
+                        color="grey"
+                    axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
+                        
                 if location_vector is not None:
                     plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=25)
                 if (e == 0) and isinstance(self.samples, pd.DataFrame) and show_samples:
@@ -331,8 +306,6 @@ class WorldMap:
                 if color_demes:
                     deme_types_at_time = self.get_all_deme_types_at_time(times[e])
                     axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
-                #else:
-                #    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], color="grey", zorder=2)
                 if title is None:
                     axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
                 else:
@@ -347,7 +320,7 @@ class WorldMap:
         else:
             plt.close()
 
-    def build_transition_matrices(self, migration_rates):
+    def build_transition_matrices(self, m):
         """Builds the transition matrix based on the world map and migration rates
 
         row is the starting location, column is the next location
@@ -371,8 +344,7 @@ class WorldMap:
             for _,connection in self.connections[e].iterrows():
                 i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
                 i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
-                rate = migration_rates[np.where(self.existing_connection_types==connection["type"])[0][0]]
-                transition_matrix[e, i_0, i_1] = rate
+                transition_matrix[e, i_0, i_1] = m*connection["type"]
             diag = -np.sum(transition_matrix[e], axis=1)
             np.fill_diagonal(transition_matrix[e], diag)
         return transition_matrix
@@ -564,7 +536,6 @@ def nx_bin_ts(ts, bins):
     ts_out = tables.tree_sequence()
     return ts_out
 
-
 def _deconstruct_tree(tree, epochs, time_bins=None):
     num_nodes = len(tree.postorder())
     parents = np.full(num_nodes, -1, dtype="int64")
@@ -621,7 +592,7 @@ def _deconstruct_trees(trees, epochs, time_bins=None):
     return pl, bal, tbw, iat, unique_branch_lengths
 
 @njit()
-def _likelihood_of_tree_log_faster(
+def _likelihood_of_tree_log(
         parents,
         branch_above,
         unique_branch_lengths,
@@ -661,87 +632,7 @@ def _likelihood_of_tree_log_faster(
             composite_across_roots += logsumexp_custom(stationary_distribution_log + current_pos, axis=0)
     return composite_across_roots
 
-@njit()
-def _likelihood_of_tree_log(
-        parents,
-        branch_above,
-        unique_branch_lengths,
-        time_bin_widths,
-        ids_asc_time,
-        sample_locations_array,
-        sample_ids,
-        precomputed_transitions,
-        stationary_distribution
-    ):
-
-    stationary_distribution[stationary_distribution <= 1e-99] = 1e-99
-
-    num_demes = len(sample_locations_array[0])
-    messages = np.zeros((len(parents), num_demes), dtype="float64")
-    composite_across_roots = 0
-    for id in ids_asc_time:
-        if id in sample_ids:
-            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
-            current_pos[current_pos <= 1e-99] = 1e-99
-            current_pos = np.log(current_pos)
-        else:
-            children = np.where(parents==id)[0]
-            current_pos = np.zeros(num_demes, dtype="float64")
-            for child in children:
-                current_pos += messages[child]
-        parent = parents[id]
-        if parent != -1:
-            bl = branch_above[:,id]
-            included_epochs = np.where(bl > 0)[0]
-            P = np.eye(num_demes)
-            if (len(included_epochs) > 0):
-                for epoch in included_epochs:
-                    bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
-                    P = np.dot(P, precomputed_transitions[epoch][bl_index])
-            P = np.log(np.maximum(P, 1e-99))
-            messages[id] = logsumexp_custom(P + current_pos, axis=1)
-        else:   # collect roots here
-            composite_across_roots += logsumexp_custom(np.log(stationary_distribution) + current_pos, axis=0)
-    return composite_across_roots
-
-@njit()
-def _likelihood_of_tree(
-        parents,
-        branch_above,
-        unique_branch_lengths,
-        time_bin_widths,
-        ids_asc_time,
-        sample_locations_array,
-        sample_ids,
-        precomputed_transitions,
-        stationary_distribution
-    ):
-
-    num_demes = len(sample_locations_array[0])
-    messages = np.zeros((len(parents), num_demes), dtype="float64")
-    composite_across_roots = 0
-    for id in ids_asc_time: 
-        if id in sample_ids:
-            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
-        else:
-            children = np.where(parents==id)[0]
-            current_pos = np.ones(num_demes, dtype="float64")
-            for child in children:
-                current_pos = np.multiply(current_pos, messages[child])
-        parent = parents[id]
-        if parent != -1:
-            bl = branch_above[:,id]
-            included_epochs = np.where(bl > 0)[0]
-            P = np.eye(num_demes)
-            if (len(included_epochs) > 0):
-                for epoch in included_epochs:
-                    bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
-                    P = np.dot(P, precomputed_transitions[epoch][bl_index])
-            messages[id] = np.dot(P, current_pos)
-        else:   # collect roots here
-            composite_across_roots += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
-    return composite_across_roots
-
+@njit(parallel=True)
 def _process_trees(
         parents,
         branch_above,
@@ -757,7 +648,7 @@ def _process_trees(
 
     composite_likelihood = 0
     for i in prange(len(branch_above)):
-        composite_likelihood += _likelihood_of_tree_log_faster(
+        composite_likelihood += _likelihood_of_tree_log(
             parents=parents[i],
             branch_above=branch_above[i],
             unique_branch_lengths=unique_branch_lengths,
@@ -809,7 +700,7 @@ def _calc_composite_likelihood_for_rates(
         output_file=None
     ):
 
-    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+    transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
 
     precomputed_transitions = precalculate_transitions(
         branch_lengths=unique_branch_lengths,
@@ -848,13 +739,12 @@ def run_for_rate_combo(
         demes_path,
         samples_path,
         trees_dir_path,
-        time_bins=None,
-        asymmetric=False
+        time_bins=None
     ):
     
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
-    world_map = WorldMap(demes, samples, asymmetric)
+    world_map = WorldMap(demes, samples)
 
     if trees_dir_path[-1] != "/":
         trees_dir_path += "/"
@@ -888,7 +778,8 @@ def run(
         samples_path,
         trees_dir_path,
         time_bins=None,
-        asymmetric=False,
+        num_walkers=10,
+        num_iters=1,
         output_file=None
     ):
     
@@ -898,7 +789,7 @@ def run(
 
     demes = pd.read_csv(demes_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
-    world_map = WorldMap(demes, samples, asymmetric)
+    world_map = WorldMap(demes, samples)
 
     if trees_dir_path[-1] != "/":
         trees_dir_path += "/"
@@ -913,13 +804,13 @@ def run(
     sample_locations_array, sample_ids = world_map._build_sample_locations_array()
     parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
 
-    bounds = [(-10, 2) for rate in world_map.existing_connection_types]
+    bounds = [(-10, 0)]
 
     res = shgo(
         _calc_composite_likelihood_for_log_rates,
         bounds=bounds,
-        n=100,
-        iters=max(5, len(bounds)),
+        n=num_walkers,
+        iters=num_iters,
         sampling_method="sobol",
         args=(
             world_map,
@@ -931,7 +822,8 @@ def run(
             sample_locations_array,
             sample_ids,
             output_file
-        )
+        ),
+        minimizer_kwargs={"ftol":0.001}
     )
 
     return np.exp(res.x), -res.fun
@@ -1026,7 +918,7 @@ def locate_nodes_in_tree(
         migration_rates
     ):
 
-    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+    transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
 
     parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
     
@@ -1088,7 +980,7 @@ def track_lineage_in_tree(
         migration_rates
     ):
 
-    transition_matrices = world_map.build_transition_matrices(migration_rates=migration_rates)
+    transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
 
     parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
     
