@@ -1,5 +1,6 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.tri as tri
 import random
 import numpy as np
 from scipy import linalg
@@ -10,8 +11,97 @@ from numba import njit, prange
 from collections import Counter
 import math
 from scipy.optimize import shgo
+from scipy.spatial import Voronoi, voronoi_plot_2d
 from glob import glob
 import sys
+import time
+
+
+def voronoi_finite_polygons_2d(vor, radius=None):
+    """
+
+    https://stackoverflow.com/questions/20515554/colorize-voronoi-diagram
+
+    Reconstruct infinite voronoi regions in a 2D diagram to finite
+    regions.
+
+    Parameters
+    ----------
+    vor : Voronoi
+        Input diagram
+    radius : float, optional
+        Distance to 'points at infinity'.
+
+    Returns
+    -------
+    regions : list of tuples
+        Indices of vertices in each revised Voronoi regions.
+    vertices : list of tuples
+        Coordinates for revised Voronoi vertices. Same as coordinates
+        of input vertices, with 'points at infinity' appended to the
+        end.
+
+    """
+
+    if vor.points.shape[1] != 2:
+        raise ValueError("Requires 2D input")
+
+    new_regions = []
+    new_vertices = vor.vertices.tolist()
+
+    center = vor.points.mean(axis=0)
+    if radius is None:
+        radius = np.ptp(vor.points).max()
+
+    # Construct a map containing all ridges for a given point
+    all_ridges = {}
+    for (p1, p2), (v1, v2) in zip(vor.ridge_points, vor.ridge_vertices):
+        all_ridges.setdefault(p1, []).append((p2, v1, v2))
+        all_ridges.setdefault(p2, []).append((p1, v1, v2))
+
+    # Reconstruct infinite regions
+    for p1, region in enumerate(vor.point_region):
+        vertices = vor.regions[region]
+
+        if all(v >= 0 for v in vertices):
+            # finite region
+            new_regions.append(vertices)
+            continue
+
+        # reconstruct a non-finite region
+        ridges = all_ridges[p1]
+        new_region = [v for v in vertices if v >= 0]
+
+        for p2, v1, v2 in ridges:
+            if v2 < 0:
+                v1, v2 = v2, v1
+            if v1 >= 0:
+                # finite ridge: already in the region
+                continue
+
+            # Compute the missing endpoint of an infinite ridge
+
+            t = vor.points[p2] - vor.points[p1] # tangent
+            t /= np.linalg.norm(t)
+            n = np.array([-t[1], t[0]])  # normal
+
+            midpoint = vor.points[[p1, p2]].mean(axis=0)
+            direction = np.sign(np.dot(midpoint - center, n)) * n
+            far_point = vor.vertices[v2] + direction * radius
+
+            new_region.append(len(new_vertices))
+            new_vertices.append(far_point.tolist())
+
+        # sort region counterclockwise
+        vs = np.asarray([new_vertices[v] for v in new_region])
+        c = vs.mean(axis=0)
+        angles = np.arctan2(vs[:,1] - c[1], vs[:,0] - c[0])
+        new_region = np.array(new_region)[np.argsort(angles)]
+
+        # finish
+        new_regions.append(new_region.tolist())
+
+    return new_regions, np.asarray(new_vertices)
 
 
 def colorFader(c1,c2,mix=0): #fade (linear interpolate) from color c1 (at mix=0) to c2 (mix=1)
@@ -35,7 +125,7 @@ class WorldMap:
     Attributes
     ----------
     demes : pandas.DataFrame
-    deme_types : numpy.ndarray
+    deme_suitabilities : numpy.ndarray
     samples : pandas.DataFrame
     epochs : numpy.ndarray
     connections : list of pandas.DataFrames
@@ -43,7 +133,7 @@ class WorldMap:
         All possible connection types, even if not observed in the map
     """
 
-    def __init__(self, demes, samples=None):
+    def __init__(self, demes, connections, samples=None):
         """Initializes the WorldMap object
 
         Parameters
@@ -54,71 +144,93 @@ class WorldMap:
         samples : pandas.DataFrame
         """
 
-        self.demes = demes.copy()        
-        self.demes["type"] = self.demes["type"].astype(str)
-        
-        formatted_dt = []
-        for dt in self.demes["type"]:
-            if ":" in dt:
-                formatted_dt.append(dt)
-            else:
-                formatted_dt.append(f"0:{dt}")
-        self.demes["type"] = formatted_dt
-
-        converted_neighbors = []
-        for index,row in self.demes.iterrows():
-            neighbors = str(row["neighbours"]).split(",")
-            int_neighbors = []
-            for neighbor in neighbors:
-                neighbor = int(neighbor)
-                int_neighbors.append(neighbor)
-            converted_neighbors.append(int_neighbors)
-        self.demes["neighbours"] = converted_neighbors
-
         self.samples = None
         self.sample_locations_array = None
         if samples is not None:
             self.samples = samples.copy()
             self.sample_locations_array = self._build_sample_locations_array()
+
+        self.demes = demes.copy()  
+        self.demes["suitability"] = self.demes["suitability"].astype(str)
+        formatted_suitability_strings = []
+        for suitability in self.demes["suitability"]:
+            formatted_suitability_strings.append(self._format_parameter_string(suitability))
+        self.demes["suitability"] = formatted_suitability_strings
+
+        self.connections = connections.copy()
+        self.connections["migration_modifier"] = self.connections["migration_modifier"].astype(str)
+        formatted_modifier_strings = []
+        for modifier in self.connections["migration_modifier"]:
+            formatted_modifier_strings.append(self._format_parameter_string(modifier))
+        self.connections["migration_modifier"] = formatted_modifier_strings
     
         epochs = [0]
-        deme_types = []
-        for dt in self.demes["type"]:
-            epoch_formatter = dt.replace(",", ":").split(":")
+        for suitability_string in self.demes["suitability"]:
+            epoch_formatter = suitability_string.replace(",", ":").split(":")
             for epoch_assignment in epoch_formatter[::2]:
-                epoch_assignment = int(epoch_assignment)
+                epoch_assignment = float(epoch_assignment)
                 if epoch_assignment not in epochs:
                     epochs.append(epoch_assignment)
-            for type_assignment in epoch_formatter[1::2]:
-                type_assignment = type_assignment
-                if type_assignment not in deme_types:
-                    deme_types.append(type_assignment)
+        for modifier_string in self.connections["migration_modifier"]:
+            epoch_formatter = modifier_string.replace(",", ":").split(":")
+            for epoch_assignment in epoch_formatter[::2]:
+                epoch_assignment = float(epoch_assignment)
+                if epoch_assignment not in epochs:
+                    epochs.append(epoch_assignment)
         self.epochs = np.sort(epochs)
-        deme_types = np.sort(deme_types)
 
-        self.deme_types = deme_types
+        self.suitability_ratios = [[] for t in range(len(epochs))]
+        srs = []
+        for index,row in self.connections.iterrows():
+            suitability_ratio_string = ""
+            for t in range(len(epochs)):
+                time_period = epochs[t]
+                deme_0_suitability = max(1e-9, self.get_deme_suitability_at_time(row["deme_0"], time_period))
+                deme_1_suitability = max(1e-9, self.get_deme_suitability_at_time(row["deme_1"], time_period))
+                sr = deme_1_suitability/deme_0_suitability
+                self.suitability_ratios[t].append(sr)
+                suitability_ratio_string += f"{time_period}:{sr},"
+            srs.append(suitability_ratio_string[:-1])
+        self.connections["suitability_ratio"] = srs
 
+    def get_deme_suitabilities_by_epoch(self):
+        deme_suitabilities = [[] for epoch in self.epochs]
+        for suitability_string in self.demes["suitability"]:
+            epoch_formatter = suitability_string.replace(",", ":").split(":")
+            for t in range(0, len(epoch_formatter), 2):
+                deme_suitabilities[np.where(self.epochs==float(epoch_formatter[t]))[0][0]].append(float(epoch_formatter[t+1]))
+        for i,dsl in enumerate(deme_suitabilities):
+            deme_suitabilities[i] = np.sort(dsl)
+        return deme_suitabilities
 
+    def get_unique_deme_suitabilities(self):
+        deme_suitabilities = []
+        for suitability_string in self.demes["suitability"]:
+            epoch_formatter = suitability_string.replace(",", ":").split(":")
+            for t in range(0, len(epoch_formatter), 2):
+                deme_suitabilities.append(float(epoch_formatter[t+1]))
+        deme_suitabilties = np.unique(deme_suitabilties)
+        return deme_suitabilities
 
+    def get_range_of_deme_suitabilities(self):
+        ds = self.get_unique_deme_suitabilities()
+        return min(ds), max(ds)
 
-        connections = []
-        for time_period in self.epochs:
-            epoch_connections = []
-            for index,row in demes.iterrows():
-                row_type = self.get_deme_type_at_time(row["id"], time_period)
-                if row_type == 0:
-                    row_type = 1e-9
-                neighbors = str(row["neighbours"]).split(",")
-                for neighbor in neighbors:
-                    neighbor = int(neighbor)
-                    neighbor_type = self.get_deme_type_at_time(neighbor, time_period)
-                    if neighbor_type == 0:
-                        neighbor_type = 1e-9
-                    ct = neighbor_type / row_type
-                    epoch_connections.append({"deme_0":row["id"], "deme_1":neighbor, "type":ct})
-            epoch_connections = pd.DataFrame(epoch_connections)
-            connections.append(epoch_connections)
-        self.connections = connections
+    def _format_parameter_string(self, s):
+        if ":" in s:
+            split_string = s.replace(",", ":").split(":")
+            epochs = np.array(split_string[::2]).astype(float)
+            parameters = np.array(split_string[1::2]).astype(float)
+            sorted_epochs = np.argsort(epochs)
+            formatted = ""
+            if epochs[sorted_epochs[0]] != 0:
+                formatted += "0:0,"
+            for e in sorted_epochs:
+                formatted += f"{epochs[e]}:{parameters[e]},"
+            return formatted[:-1]
+        elif s == "nan":
+            raise RuntimeError(f"String `{s}` cannot be formatted.")
+        return f"0:{s}"
 
     def get_coordinates_of_deme(self, id):
         """Gets x and y coordinates for specified deme
@@ -138,7 +250,7 @@ class WorldMap:
         coords = (row["xcoord"], row["ycoord"])
         return coords
     
-    def get_deme_type_string(self, id):
+    def get_deme_suitability_string(self, id):
         """Gets the type for specified deme
 
         Wrapper of pandas.DataFrame function. Assumes that deme IDs are unique.
@@ -157,7 +269,7 @@ class WorldMap:
         deme_type = self.demes.loc[self.demes["id"]==id,"type"].iloc[0]
         return deme_type
     
-    def get_deme_type_at_time(self, id, time):
+    def get_deme_suitability_at_time(self, id, time):
         """Gets the type for specified deme
 
         Wrapper of pandas.DataFrame function. Assumes that deme IDs are unique.
@@ -175,17 +287,17 @@ class WorldMap:
             Type of deme
         """
 
-        deme_type = self.demes.loc[self.demes["id"]==id,"type"].iloc[0]
-        epochs = deme_type.split(",")
+        deme_suitability = self.demes.loc[self.demes["id"]==id,"suitability"].iloc[0]
+        epochs = deme_suitability.split(",")
         for t in range(len(epochs)-1):
             details = epochs[t].split(":")
-            start = int(details[0])
-            end = int(epochs[t+1].split(":")[0])
+            start = float(details[0])
+            end = float(epochs[t+1].split(":")[0])
             if (time >= start) and (time < end):
                 return float(details[1])
         return float(epochs[-1].split(":")[1])
     
-    def get_all_deme_types_at_time(self, time):
+    def get_all_deme_suitabilities_at_time(self, time):
         """
 
         Parameters
@@ -195,40 +307,179 @@ class WorldMap:
 
         Returns
         -------
-        types_at_time : pd.Series
+        suitabilities_at_time : pd.Series
             Deme types ordered by the demes dataframe
 
         """
 
-        types_at_time = []
+        suitabilities_at_time = []
         for id in self.demes["id"]:
-            types_at_time.append(self.get_deme_type_at_time(id, time))
-        return pd.Series(types_at_time)
-            
-    def get_neighbors_of_deme(self, id):
-        """Gets the neighbors of a deme
-
-        Wrapper of pandas.DataFrame function. Assumes that deme IDs are unique.
-
-        Parameters
-        ----------
-        id : int
-            ID of deme
-
-        Returns
-        -------
-        neighbors : pd.Series
-            Contains all of the neighbors of specified deme
-        """
-
-        neighbors = self.demes.loc[self.demes["id"]==id,"neighbours"].iloc[0]
-        return neighbors
+            suitabilities_at_time.append(self.get_deme_suitability_at_time(id, time))
+        return pd.Series(suitabilities_at_time)
     
-    get_neighbours_of_deme = get_neighbors_of_deme
+    def get_connection_parameter_at_time(self, parameter, id, time):
+        connection_parameter = self.connections.loc[self.connections["id"]==id,parameter].iloc[0]
+        epochs = connection_parameter.split(",")
+        for t in range(len(epochs)-1):
+            details = epochs[t].split(":")
+            start = float(details[0])
+            end = float(epochs[t+1].split(":")[0])
+            if (time >= start) and (time < end):
+                return details[1]
+        return epochs[-1].split(":")[1]
+
+    def plot_suitability_ratio_hist(self):
+        
+
+        plt.hist(self.suitability_ratios, histtype="barstacked")
+        plt.legend(self.epochs, title="Epoch")
+        plt.xlabel("Suitability Ratio")
+        plt.ylabel("Count")
+        plt.show()
+
+    def draw_migration_surface_voronoi(
+            self,
+            figsize,
+            migration_rate_parameters
+        ):
+
+        connections = self.connections.copy()
+        times = self.epochs
+        nrows, ncols = _calc_optimal_organization_of_suplots(num_plots=len(times))
+
+        max_emr = None
+        min_emr = None
+        for t in times:
+            emr = []
+            for _,row in connections.iterrows():
+                emr.append((migration_rate_parameters[0] * self.get_connection_parameter_at_time("suitability_ratio", row["id"], t)**migration_rate_parameters[1]) * self.get_connection_parameter_at_time("migration_modifier", row["id"], t))
+            connections[f"emr{t}"] = emr
+            if max_emr is None:
+                max_emr = max(emr)
+                min_emr = min(emr)
+            else:
+                max_emr = max(max_emr, max(emr))
+                min_emr = min(min_emr, min(emr))
+
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+
+        if len(times) == 1:
+            axs = np.array([[axs]])
+        elif nrows == 1:
+            axs = np.array([axs])
+
+        for e in range(nrows*ncols):
+            if e < len(times):  #condition where empty subplots still need to have their axes turned off
+                epoch = times[e]
+                points = []
+                zs = []
+                for _,row in connections.iterrows():
+                    if row["deme_0"] < row["deme_1"]:
+                        deme_0 = self.get_coordinates_of_deme(row["deme_0"])
+                        deme_1 = self.get_coordinates_of_deme(row["deme_1"])
+                        x = (deme_0[0]+deme_1[0])/2
+                        y = (deme_0[1]+deme_1[1])/2
+                        dx = deme_1[0]-deme_0[0]
+                        dy = deme_1[1]-deme_0[1]
+                        alt_direction_migration_rate = connections.loc[(connections["deme_1"]==row["deme_0"])&(connections["deme_0"]==row["deme_1"]), f"emr{epoch}"].iloc[0]
+                        z = max(row[f"emr{epoch}"], alt_direction_migration_rate)
+                        rat = row[f"emr{epoch}"]/alt_direction_migration_rate
+                        axs[e//ncols, e%ncols].plot([deme_0[0], deme_1[0]], [deme_0[1], deme_1[1]], color="white", alpha=0.2)
+                        if rat > 1.1:
+                            axs[e//ncols, e%ncols].arrow(x-(dx*rat/5)/5, y-(dy*rat/5)/2, dx*rat/5, dy*rat/5, length_includes_head=True, color="black", head_width=0.1, zorder=3)
+                        elif rat < 0.9:
+                            axs[e//ncols, e%ncols].arrow(x+(dx*rat/5)/5, y+(dy*rat/5)/2, -dx*rat/5, -dy*rat/5, length_includes_head=True, color="black", head_width=0.1, zorder=3)
+                        points.append([x, y])
+                        zs.append(z)
+
+                max_emr = max(zs)
+                min_emr = min(zs)
+        
+                vor = Voronoi(points)
+                regions, vertices = voronoi_finite_polygons_2d(vor)
+
+                for i,region in enumerate(regions):
+                    polygon = vertices[region]
+                    if max_emr > min_emr:
+                        color = colorFader("blue","red",mix=(zs[i]-min_emr)/(max_emr-min_emr))
+                    else:
+                        color = "purple"
+                    axs[e//ncols, e%ncols].fill(*zip(*polygon), color)
+
+                axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], color="white", zorder=2)
+            axs[e//ncols, e%ncols].set_xlim(-6.5, 6.5)
+            axs[e//ncols, e%ncols].set_ylim(-6.5, 6.5)
+            axs[e//ncols, e%ncols].set_aspect("equal", 'box')
+            axs[e//ncols, e%ncols].axis("off")
+
+        plt.show()
+        
+
+
+
+    def draw_migration_surface(
+            self,
+            figsize,
+            migration_rate_parameters
+        ):
+
+        connections = self.connections.copy()
+        times = self.epochs
+        nrows, ncols = _calc_optimal_organization_of_suplots(num_plots=len(times))
+
+        max_emr = None
+        min_emr = None
+        for t in times:
+            emr = []
+            for _,row in connections.iterrows():
+                emr.append((migration_rate_parameters[0] * self.get_connection_parameter_at_time("suitability_ratio", row["id"], t)**migration_rate_parameters[1]) * self.get_connection_parameter_at_time("migration_modifier", row["id"], t))
+            connections[f"emr{t}"] = emr
+            if max_emr is None:
+                max_emr = max(emr)
+                min_emr = min(emr)
+            else:
+                max_emr = max(max_emr, max(emr))
+                min_emr = min(min_emr, min(emr))    
+
+        fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
+
+        if len(times) == 1:
+            axs = np.array([[axs]])
+        elif nrows == 1:
+            axs = np.array([axs])
+
+        for e in range(nrows*ncols):
+            if e < len(times):  #condition where empty subplots still need to have their axes turned off
+                epoch = times[e]
+                for _,row in connections.iterrows():
+                    if row["deme_0"] < row["deme_1"]:
+                        deme_0 = self.get_coordinates_of_deme(row["deme_0"])
+                        deme_1 = self.get_coordinates_of_deme(row["deme_1"])
+                        x = (deme_0[0]+deme_1[0])/2
+                        y = (deme_0[1]+deme_1[1])/2
+                        dx = deme_1[0]-deme_0[0]
+                        dy = deme_1[1]-deme_0[1]
+                        alt_direction_migration_rate = connections.loc[(connections["deme_1"]==row["deme_0"])&(connections["deme_0"]==row["deme_1"]), f"emr{epoch}"].iloc[0]
+                        which_mr = max(row[f"emr{epoch}"], alt_direction_migration_rate)
+                        diff = row[f"emr{epoch}"] - alt_direction_migration_rate
+                        if max_emr > min_emr:
+                            axs[e//ncols, e%ncols].scatter(x, y, color=colorFader("blue","red",mix=(which_mr-min_emr)/(max_emr-min_emr)), s=500, alpha=0.5)
+                        else:
+                            axs[e//ncols, e%ncols].scatter(x, y, color="purple")
+                        if diff > 0:
+                            axs[e//ncols, e%ncols].arrow(x-(dx*abs(diff)*2)/2, y-(dy*abs(diff)*2)/2, dx*abs(diff)*2, dy*abs(diff)*2, length_includes_head=True, color="black", head_width=0.1)
+                        elif diff < 0:
+                            axs[e//ncols, e%ncols].arrow(x+(dx*abs(diff)*2)/2, y+(dy*abs(diff)*2)/2, -dx*abs(diff)*2, -dy*abs(diff)*2, length_includes_head=True, color="black", head_width=0.1)
+                axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
+            axs[e//ncols, e%ncols].set_aspect("equal", 'box')
+            axs[e//ncols, e%ncols].axis("off")
+        plt.show()
+
 
     def draw(
             self,
             figsize,
+            migration_rate_parameters=None,
             color_connections=False,
             color_demes=False,
             save_to=None,
@@ -254,12 +505,29 @@ class WorldMap:
             Path to save the map to. Default is None.
         """
 
+        connections = self.connections.copy()
+        
         if location_vector is None:
             times = self.epochs
             nrows, ncols = _calc_optimal_organization_of_suplots(num_plots=len(times))
         else:
             times = [0]
             nrows, ncols = 1, 1
+
+        if migration_rate_parameters is not None:
+            max_emr = None
+            min_emr = None
+            for t in times:
+                emr = []
+                for _,row in connections.iterrows():
+                    emr.append((migration_rate_parameters[0] * self.get_connection_parameter_at_time("suitability_ratio", row["id"], t)**migration_rate_parameters[1]) * self.get_connection_parameter_at_time("migration_modifier", row["id"], t))
+                connections[f"emr{t}"] = emr
+                if max_emr is None:
+                    max_emr = max(emr)
+                    min_emr = min(emr)
+                else:
+                    max_emr = max(max_emr, max(emr))
+                    min_emr = min(min_emr, min(emr))
 
         fig, axs = plt.subplots(nrows=nrows, ncols=ncols, figsize=figsize)
 
@@ -268,15 +536,12 @@ class WorldMap:
         elif nrows == 1:
             axs = np.array([axs])
 
-        #np.unique(np.array(existing_connections))
-
-        #cts = self.connections["type"]
-        #max_ct = max(cts)
-        #min_ct = min(cts)
+        range_of_deme_suitabilities = self.get_range_of_deme_suitabilities()
 
         for e in range(nrows*ncols):
-            if e < len(times):
-                for _,row in self.connections[e].iterrows():
+            if e < len(times):  #condition where empty subplots still need to have their axes turned off
+                epoch = times[e]
+                for _,row in connections.iterrows():
                     deme_0 = self.get_coordinates_of_deme(row["deme_0"])
                     deme_1 = self.get_coordinates_of_deme(row["deme_1"])
 
@@ -296,13 +561,10 @@ class WorldMap:
                     else:
                         x = deme_0[0] + shift_along_x + shift_perp_x
                         y = deme_0[1] + shift_along_y + shift_perp_y
-
-                    #if color_connections:
-                    #    rescaled = ((row["type"]-min_ct)/(max_ct-min_ct))
-                    #    color = colorFader("black", "pink", rescaled)
-                    #else:
-                    color="grey"
-                    axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=color, head_width=0.1)
+                    if migration_rate_parameters is not None:
+                        axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color=colorFader("blue","red",mix=(row[f"emr{epoch}"]-min_emr)/(max_emr-min_emr)), head_width=0.1)
+                    else:
+                        axs[e//ncols, e%ncols].arrow(x, y, dx*0.6, dy*0.6, length_includes_head=True, color="grey", head_width=0.1)
                         
                 if location_vector is not None:
                     plt.scatter(self.demes["xcoord"], self.demes["ycoord"], zorder=2, c=location_vector[self.demes.index], vmin=0, cmap="Oranges", s=25)
@@ -311,8 +573,8 @@ class WorldMap:
                     counts = counts.merge(self.demes, how="left", left_on="deme", right_on="id").loc[:,["id", "xcoord", "ycoord", "count"]]
                     axs[e//ncols, e%ncols].scatter(counts["xcoord"], counts["ycoord"], color="orange", s=counts["count"]*10, zorder=3)
                 if color_demes:
-                    deme_types_at_time = self.get_all_deme_types_at_time(times[e])
-                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_types_at_time, vmin=min(self.deme_types), vmax=max(self.deme_types), zorder=2)
+                    deme_suitabilities_at_time = self.get_all_deme_suitabilities_at_time(times[e])
+                    axs[e//ncols, e%ncols].scatter(self.demes["xcoord"], self.demes["ycoord"], c=deme_suitabilities_at_time, vmin=range_of_deme_suitabilities[0], vmax=range_of_deme_suitabilities[1], zorder=2)
                 if title is None:
                     axs[e//ncols, e%ncols].set_title(times[e], fontname="Georgia")
                 else:
@@ -327,7 +589,7 @@ class WorldMap:
         else:
             plt.close()
 
-    def build_transition_matrices(self, m):
+    def build_transition_matrices(self, m, a=1):
         """Builds the transition matrix based on the world map and migration rates
 
         row is the starting location, column is the next location
@@ -345,15 +607,16 @@ class WorldMap:
         -------
         transition_matrix : np.array
         """
-
         transition_matrix = np.zeros((len(self.epochs), len(self.demes),len(self.demes)))
-        for e in range(len(self.epochs)):
-            for _,connection in self.connections[e].iterrows():
+        e = 0
+        for time in self.epochs:
+            for _,connection in self.connections.iterrows():
                 i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
                 i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
-                transition_matrix[e, i_0, i_1] = m*connection["type"]
+                transition_matrix[e, i_0, i_1] = (m * self.get_connection_parameter_at_time("suitability_ratio", connection["id"], time)**a) * self.get_connection_parameter_at_time("migration_modifier", connection["id"], time)
             diag = -np.sum(transition_matrix[e], axis=1)
             np.fill_diagonal(transition_matrix[e], diag)
+            e += 1
         return transition_matrix
     
     def _build_sample_locations_array(self):
@@ -710,6 +973,34 @@ def _process_trees(
         composite_likelihood += like
     return abs(composite_likelihood)
 
+def _calc_composite_likelihood_for_parameters(
+        migration_rates,
+        world_map,
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        time_bin_widths,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        output_file=None
+    ):
+
+    migration_rates[0] = np.exp(migration_rates[0])
+
+    return _calc_composite_likelihood_for_rates(
+        migration_rates=migration_rates,
+        world_map=world_map,
+        parents=parents,
+        branch_above=branch_above,
+        unique_branch_lengths=unique_branch_lengths,
+        time_bin_widths=time_bin_widths,
+        ids_asc_time=ids_asc_time,
+        sample_locations_array=sample_locations_array,
+        sample_ids=sample_ids,
+        output_file=output_file
+    )
+
 def _calc_composite_likelihood_for_log_rates(
         migration_rates,
         world_map,
@@ -746,10 +1037,16 @@ def _calc_composite_likelihood_for_rates(
         ids_asc_time,
         sample_locations_array,
         sample_ids,
+        verbose=False,
         output_file=None
     ):
 
-    transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
+    #start = time.time()
+    if len(migration_rates) > 1:
+        transition_matrices = world_map.build_transition_matrices(m=migration_rates[0], a=migration_rates[1])
+    else:
+        transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
+    #print(time.time() - start, flush=True)
 
     precomputed_transitions = precalculate_transitions(
         branch_lengths=unique_branch_lengths,
@@ -779,10 +1076,139 @@ def _calc_composite_likelihood_for_rates(
     if output_file is not None:
         with open(output_file, "a") as outfile:
             outfile.write(f"{migration_rates}\t{-composite_likelihood}\n")
-    else:
+    elif verbose:
         print(migration_rates, -composite_likelihood)
     return composite_likelihood
 
+def run(
+        demes_path,
+        connections_path,
+        samples_path,
+        trees_dir_path,
+        chop_time=None,
+        time_bins=None,
+        num_walkers=10,
+        num_iters=1,
+        output_file=None
+    ):
+    
+    if output_file is not None:
+        with open(output_file, "w") as outfile:
+            outfile.write("rates\tloglikelihood\n")
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, connections, samples)
+    
+    unique_suitability_ratios = np.unique(world_map.suitability_ratios)
+
+    if trees_dir_path[-1] != "/":
+        trees_dir_path += "/"
+    
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts)
+        if chop_time is not None:
+            decap = tree.decapitate(chop_time)
+            tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
+        if time_bins is not None:
+            tree = nx_bin_ts(tree, time_bins)
+        trees.append(tree.first())
+
+    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
+
+    if len(unique_suitability_ratios) > 1:
+        bounds = [(-10, 3), (-5, 5)]
+    else:
+        bounds = [(-10, 3)]
+    
+    res = shgo(
+        _calc_composite_likelihood_for_parameters,
+        bounds=bounds,
+        n=num_walkers,
+        iters=num_iters,
+        sampling_method="sobol",
+        args=(
+            world_map,
+            parents,
+            branch_above,
+            unique_branch_lengths,
+            time_bin_widths,
+            ids_asc_time,
+            sample_locations_array,
+            sample_ids,
+            output_file
+        ),
+        minimizer_kwargs={"ftol":0.001}
+    )
+
+    final = res.x.copy()
+    final[0] = np.exp(final[0])
+    return final, -res.fun
+
+def run_for_parameters(
+        parameters,
+        demes_path,
+        connections_path,
+        samples_path,
+        trees_dir_path,
+        chop_time=None,
+        time_bins=None
+    ):
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, connections, samples)
+    unique_suitability_ratios = np.unique(world_map.suitability_ratios)
+
+    if trees_dir_path[-1] != "/":
+        trees_dir_path += "/"
+    
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts)
+        if chop_time is not None:
+            decap = tree.decapitate(chop_time)
+            tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
+        if time_bins is not None:
+            tree = nx_bin_ts(tree, time_bins)
+        trees.append(tree.first())
+
+    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
+    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
+
+    parameters[0] = np.log(parameters[0])
+
+    likelihood = _calc_composite_likelihood_for_parameters(
+        parameters,
+        world_map,
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        time_bin_widths,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids
+    )
+    
+    return -likelihood
+
+
+
+
+
+
+
+
+
+
+
+
+
+#OLD
 def run_for_rate_combo(
         migration_rates,
         demes_path,
@@ -822,63 +1248,7 @@ def run_for_rate_combo(
 
     return comp_like
 
-def run(
-        demes_path,
-        samples_path,
-        trees_dir_path,
-        chop_time=None,
-        time_bins=None,
-        num_walkers=10,
-        num_iters=1,
-        output_file=None
-    ):
-    
-    if output_file is not None:
-        with open(output_file, "w") as outfile:
-            outfile.write("rates\tloglikelihood\n")
-
-    demes = pd.read_csv(demes_path, sep="\t")
-    samples = pd.read_csv(samples_path, sep="\t")
-    world_map = WorldMap(demes, samples)
-
-    if trees_dir_path[-1] != "/":
-        trees_dir_path += "/"
-    
-    trees = []
-    for ts in glob(trees_dir_path+"*"):
-        tree = tskit.load(ts)
-        if chop_time is not None:
-            decap = tree.decapitate(chop_time)
-            tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
-        if time_bins is not None:
-            tree = nx_bin_ts(tree, time_bins)
-        trees.append(tree.first())
-
-    sample_locations_array, sample_ids = world_map._build_sample_locations_array()
-    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
-
-    res = shgo(
-        _calc_composite_likelihood_for_log_rates,
-        bounds=[(-10, 0)],
-        n=num_walkers,
-        iters=num_iters,
-        sampling_method="sobol",
-        args=(
-            world_map,
-            parents,
-            branch_above,
-            unique_branch_lengths,
-            time_bin_widths,
-            ids_asc_time,
-            sample_locations_array,
-            sample_ids,
-            output_file
-        ),
-        minimizer_kwargs={"ftol":0.001}
-    )
-
-    return np.exp(res.x), -res.fun
-
+#OLD
 def locate(
         demes_path,
         samples_path,
@@ -962,7 +1332,7 @@ def _get_messages(
                     messages[(id, child)] = current_pos
     return messages
 
-
+#OLD
 def locate_nodes_in_tree(
         tree,
         world_map,
