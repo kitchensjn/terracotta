@@ -20,9 +20,7 @@ pruning<-function(q,tree,x,model=NULL,...){
   L<-rbind(to.matrix(x[pw$tip.label],levels(x)),
            matrix(0,tree$Nnode,k,dimnames=
                     list(1:tree$Nnode+Ntip(tree))))
-  print(L)
   nn<-unique(pw$edge[,1])
-  print(pw$edge)
   for(i in 1:length(nn)){
     ee<-which(pw$edge[,1]==nn[i])
     PP<-matrix(NA,length(ee),k)
@@ -41,7 +39,7 @@ pruning<-function(q,tree,x,model=NULL,...){
 data(eel.data)
 data(eel.tree)
 
-write.tree(eel.tree, file="/Users/jameskitchens/Documents/GitHub/terracotta/devlog/20251029/assets/phytools_comparison/tutorial_tree.newick")
+#write.tree(eel.tree, file="/Users/jameskitchens/Documents/GitHub/terracotta/devlog/20251029/assets/phytools_comparison/tutorial_tree.newick")
 
 feeding_mode<-setNames(eel.data$feed_mode,rownames(eel.data))
 plotTree(eel.tree,lwd=1,ftype="i",direction="upwards",offset=1,
@@ -54,13 +52,24 @@ legend("topleft",levels(feeding_mode),pch=21,pt.cex=2,
 
 
 model<-matrix(c(0,1,2,0),2,2,byrow=TRUE)
-#fitted<-optim(c(1,1),pruning,tree=eel.tree,x=feeding_mode,
-#              model=model,method="L-BFGS-B",lower=1e-12,
-#              control=list(fnscale=-1))
+fitted<-optim(c(1,1),pruning,tree=eel.tree,x=feeding_mode,
+              model=model,method="L-BFGS-B",lower=1e-12,
+              control=list(fnscale=-1))
+fitted
+
+
+fitMk(eel.tree,feeding_mode,model="ARD")
+
+pruning(
+  q=c(0.01562150, 0.01749247),
+  tree=eel.tree,
+  x=feeding_mode,
+  model=model
+)
 
 
 pruning(
-  q=c(0.01, 0.05),
+  q=c(0.015609, 0.017491),
   tree=eel.tree,
   x=feeding_mode,
   model=model

@@ -7,13 +7,35 @@ import tskit
 import pandas as pd
 
 
+demes = pd.DataFrame({"id":[0,1], "xcoord":[0,1], "ycoord":[0,1], "suitability":[1,1]})
+connections = pd.DataFrame({"id":[0,1], "deme_0":[0,1], "deme_1":[1,0], "migration_modifier":["a","b"]})
+demes.to_csv("demes.tsv", sep="\t", index=False)
+connections.to_csv("connections.tsv", sep="\t", index=False)
+
+print(tct.run_for_parameters(
+    parameters=[1, 0.015609, 0.017491],
+    demes_path="demes.tsv",
+    connections_path="connections.tsv",
+    samples_path="samples.tsv",
+    trees_dir_path="trees"
+))
+
+exit()
+
+
+
+
 result, log_likelihood = tct.run(
     demes_path="demes.tsv",
+    connections_path="connections.tsv",
     samples_path="samples.tsv",
     trees_dir_path="trees",
-    asymmetric=True,
     output_file="results.txt"
 )
+
+print(result, log_likelihood)
+
+exit()
 
 
 
