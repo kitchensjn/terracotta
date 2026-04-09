@@ -1,4 +1,5 @@
 library(expm)
+library(geiger)
 
 pruning<-function(q,tree,x,model=NULL,...){
   pw<-reorder(tree,"postorder")
@@ -32,8 +33,12 @@ pruning<-function(q,tree,x,model=NULL,...){
   prob
 }
 
+data(g)
 
 library(phytools)
+
+
+
 data(eel.data)
 data(eel.tree)
 

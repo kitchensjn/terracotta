@@ -713,8 +713,6 @@ class WorldMap:
         else:
             return True
 
-
-
 def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
     """Calculates the transition probabilities between demes for each branch length
 
@@ -755,6 +753,8 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
         else:
             for i in range(len(branch_lengths[e])):
                 transitions[i] = linalg.expm(transition_matrices[e]*branch_lengths[e][i])
+                #print(linalg.fractional_matrix_power(exponentiated, branch_lengths[e][i]))
+                #transitions[i] = linalg.fractional_matrix_power(exponentiated, branch_lengths[e][i])
         all_transitions.append(transitions)
     return all_transitions
 
@@ -904,79 +904,6 @@ def _deconstruct_trees(trees, epochs, time_bins=None):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
     return pl, bal, tbw, iat, unique_branch_lengths
 
-def calc_stationary_distribution(transition_matrix):
-    eigenvalues, eigenvectors = np.linalg.eig(transition_matrix.T)
-    idx = np.argmin(np.abs(eigenvalues - 1))
-    w = np.real(eigenvectors[:, idx]).T
-    stationary_distribution = w/np.sum(w)
-    return stationary_distribution
-
-def convert_to_opposite_rate_matrix(transition_matrix):
-    stationary_distribution = calc_stationary_distribution(transition_matrix)
-    opposite = np.zeros((len(transition_matrix), len(transition_matrix)))
-    for i in range(len(transition_matrix)):
-        for j in range(len(transition_matrix)):
-            if i != j:
-                opposite[i][j] = (stationary_distribution[j] * transition_matrix[j][i]) / stationary_distribution[i]
-    diag = -np.sum(opposite, axis=1)
-    np.fill_diagonal(opposite, diag)
-    return opposite
-
-def _calc_current_pos(id, messages, parents):
-    children = np.where(parents==id)[0]
-    current_pos = np.ones(messages.shape[1], dtype="float64")
-    for child in children:
-        current_pos = np.multiply(current_pos, messages[child])
-    return current_pos
-
-def _calc_branch_message(id, current_pos, branch_above, transition_matrices):
-    bl = branch_above[:,id]
-    included_epochs = np.where(bl > 0)[0]
-    P = np.eye(len(current_pos))
-    if (len(included_epochs) > 0):
-        for epoch in included_epochs:
-            P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
-    message = np.dot(P, current_pos)
-    return message
-
-def likelihood_of_tree(
-        parents,
-        branch_above,
-        ids_asc_time,
-        sample_locations_array,
-        sample_ids,
-        transition_matrices,
-        stationary_distribution
-    ):
-
-    num_demes = len(sample_locations_array[0])
-    messages = np.zeros((len(parents), num_demes), dtype="float64")
-    loglikelihood = 0
-    for id in ids_asc_time: 
-        if id in sample_ids:
-            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
-        else:
-            current_pos = _calc_current_pos(
-                id,
-                messages,
-                parents
-            )
-        parent = parents[id]
-        if parent != -1:
-            messages[id] = _calc_branch_message(
-                id,
-                current_pos,
-                branch_above,
-                transition_matrices
-            )
-        else:   # collect roots here
-            loglikelihood += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
-    return loglikelihood
-
-
-
-
-
 @njit()
 def _likelihood_of_tree_log_faster(
         parents,
@@ -1015,6 +942,7 @@ def _likelihood_of_tree_log_faster(
             P = np.log(np.maximum(P, 1e-99))
             messages[id] = logsumexp_custom(P + current_pos, axis=1)
         else:   # collect roots here
+            print(stationary_distribution_log+current_pos)
             composite_across_roots += logsumexp_custom(stationary_distribution_log + current_pos, axis=0)
     return composite_across_roots
 
@@ -1093,10 +1021,15 @@ def _likelihood_of_tree(
                     bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
                     P = np.dot(P, precomputed_transitions[epoch][bl_index])
             messages[id] = np.dot(P, current_pos)
+            #print(current_pos)
+            #print(bl)
+            #print(messages[id])
+            #print(np.sum(messages[id]))
+            #exit()
         else:   # collect roots here
+            #print(np.multiply(stationary_distribution, current_pos))
             composite_across_roots += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
     return composite_across_roots
-
 
 @njit(parallel=True)
 def _process_trees(
@@ -1114,16 +1047,16 @@ def _process_trees(
 
     composite_likelihood = 0
     for i in prange(len(branch_above)):
-        like = _likelihood_of_tree_log_faster(
+        like = _likelihood_of_tree(
             parents=parents[i],
             branch_above=branch_above[i],
-            ids_asc_time=ids_asc_time[i],
             unique_branch_lengths=unique_branch_lengths,
-            time_bin_widths=time_bin_widths,
+            time_bin_widths=time_bin_widths[i],
+            ids_asc_time=ids_asc_time[i],
             sample_locations_array=sample_locations_array,
             sample_ids=sample_ids,
             precomputed_transitions=precomputed_transitions,
-            stationary_distribution_log=stationary_distribution_log
+            stationary_distribution=stationary_distribution
         )
         composite_likelihood += like
     return abs(composite_likelihood)
@@ -1152,9 +1085,17 @@ def _calc_composite_likelihood_for_parameters(
         transition_matrices=transition_matrices
     )
 
-    stationary_distribution = calc_stationary_distribution(transition_matrices[-1])
-    #stationary_distribution = np.full(len(world_map.demes), 1/len(world_map.demes))
+    #stationary_distribution = np.array([1e-99,1e-99,1e-99,1e-99,1e-99,1-(5e-99)])   #np.full(len(world_map.demes), 1/len(world_map.demes))
+    stationary_distribution = np.full(len(world_map.demes), 1/len(world_map.demes))
     stationary_distribution_log = np.log(stationary_distribution)
+
+    # https://people.duke.edu/~ccc14/sta-663-2016/homework/Homework02_Solutions.html
+    #eigenvalues, eigenvectors = np.linalg.eig(transition_matrices[-1].T)
+    #idx = np.argmin(np.abs(eigenvalues - 1))
+    #w = np.real(eigenvectors[:, idx]).T
+    #stationary_distribution = w/np.sum(w)
+    #stationary_distribution[stationary_distribution <= 1e-99] = 1e-99
+    #stationary_distribution_log = np.log(stationary_distribution)
 
     composite_likelihood = _process_trees(
         parents=parents,
@@ -1172,7 +1113,10 @@ def _calc_composite_likelihood_for_parameters(
         with open(output_file, "a") as outfile:
             outfile.write(f"{parameters}\t{-composite_likelihood}\n")
     if verbose:
+        for p in parameters:
+            print(p, flush=True)
         print(-composite_likelihood, flush=True)
+        print()
     return composite_likelihood
 
 def run(
@@ -1182,6 +1126,8 @@ def run(
         trees_dir_path,
         chop_time=None,
         time_bins=None,
+        num_walkers=1000,
+        num_iters=10,
         output_file=None,
         verbose=False
     ):
@@ -1194,6 +1140,7 @@ def run(
     connections = pd.read_csv(connections_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
     world_map = WorldMap(demes, connections, samples)
+    print(world_map.parameters)
 
     if trees_dir_path[-1] != "/":
         trees_dir_path += "/"
@@ -1220,7 +1167,7 @@ def run(
     
     res = minimize(
         fun=_calc_composite_likelihood_for_parameters,
-        x0=np.array([-2 for p in world_map.parameters]),
+        x0=np.array([0 for p in world_map.parameters]),#np.log(1), np.log(1.80703926e-03), np.log(6.03344562e+01), np.log(1.76808772e+03), np.log(5.77388324e+02), np.log(6.03338160e+01), np.log(2.02894479e-03)]),
         args=(
             world_map,
             parents,
@@ -1236,6 +1183,46 @@ def run(
         method="L-BFGS-B"
     )
 
+    #res = basinhopping(
+    #    func=_calc_composite_likelihood_for_parameters,
+    #    x0=np.array([1 for parameter in world_map.parameters]),
+    #    minimizer_kwargs={
+    #        "args":(
+    #            world_map,
+    #            parents,
+    #            branch_above,
+    #            unique_branch_lengths,
+    #            time_bin_widths,
+    #            ids_asc_time,
+    #            sample_locations_array,
+    #            sample_ids,
+    #            output_file,
+    #            verbose
+    #        )
+    #    }
+    #)
+    
+    #res = shgo(
+    #    _calc_composite_likelihood_for_parameters,
+    #    bounds=bounds,
+    #    n=num_walkers,
+    #    iters=num_iters,
+    #    sampling_method="sobol",
+    #    args=(
+    #        world_map,
+    #        parents,
+    #        branch_above,
+    #        unique_branch_lengths,
+    #        time_bin_widths,
+    #        ids_asc_time,
+    #        sample_locations_array,
+    #        sample_ids,
+    #        output_file,
+    #        verbose
+    #    ),
+    #    minimizer_kwargs={"ftol":0.001}
+    #)
+
     final = res.x.copy()
     for p in range(len(world_map.parameters)):
         if world_map.parameters[p] != "alpha":
@@ -1244,6 +1231,129 @@ def run(
 
 
 
+
+
+def run_for_parameters(
+        parameters,
+        demes_path,
+        connections_path,
+        samples_path,
+        trees_dir_path,
+        chop_time=None,
+        time_bins=None
+    ):
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, connections, samples)
+    unique_suitability_ratios = np.unique(world_map.suitability_ratios)
+
+    if trees_dir_path[-1] != "/":
+        trees_dir_path += "/"
+    
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts)
+        if chop_time is not None:
+            decap = tree.decapitate(chop_time)
+            tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
+        if time_bins is not None:
+            tree = nx_bin_ts(tree, time_bins)
+        trees.append(tree.first())
+
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
+
+    likelihood = _calc_composite_likelihood_for_parameters(
+        parameters,
+        world_map,
+        parents,
+        branch_above,
+        unique_branch_lengths,
+        time_bin_widths,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids
+    )
+    
+    return -likelihood
+
+
+
+
+
+
+
+
+
+
+
+
+
+#OLD
+def run_for_rate_combo(
+        migration_rates,
+        demes_path,
+        samples_path,
+        trees_dir_path,
+        time_bins=None
+    ):
+    
+    demes = pd.read_csv(demes_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, samples)
+
+    if trees_dir_path[-1] != "/":
+        trees_dir_path += "/"
+    
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts)
+        if time_bins is not None:
+            tree = nx_bin_ts(tree, time_bins)
+        trees.append(tree.first())
+
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
+
+    comp_like = _calc_composite_likelihood_for_rates(
+        migration_rates=migration_rates,
+        world_map=world_map,
+        parents=parents,
+        branch_above=branch_above,
+        unique_branch_lengths=unique_branch_lengths,
+        time_bin_widths=time_bin_widths,
+        ids_asc_time=ids_asc_time,
+        sample_locations_array=sample_locations_array,
+        sample_ids=sample_ids
+    )
+
+    return comp_like
+
+#OLD
+def locate(
+        demes_path,
+        samples_path,
+        tree_path,
+        migration_rates,
+        asymmetric=False
+    ):
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, samples, asymmetric)
+    tree = tskit.load(tree_path).first()
+
+    # ADD A CHECK THAT THE NUMBER OF RATES PROVIDED MATCHES THOSE NEEDED
+
+    locs = locate_nodes_in_tree(
+        tree=tree,
+        world_map=world_map,
+        migration_rates=migration_rates
+    )
+
+    return locs
 
 
 def _get_messages(
@@ -1305,6 +1415,44 @@ def _get_messages(
                     messages[(id, child)] = current_pos
     return messages
 
+#OLD
+def locate_nodes_in_tree(
+        tree,
+        world_map,
+        migration_rates
+    ):
+
+    transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
+
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
+    
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+
+    messages = _get_messages(
+        parents=parents,
+        branch_above=branch_above,
+        time_bin_widths=time_bin_widths,
+        ids_asc_time=ids_asc_time,
+        sample_locations_array=sample_locations_array,
+        sample_ids=sample_ids,
+        transition_matrices=transition_matrices
+    )
+    
+    L = np.zeros((len(parents), len(world_map.demes)))
+    for id in ids_asc_time:
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+        else:
+            incoming_keys = [key for key in messages.keys() if key[1] == id]
+            incoming_messages = np.zeros((len(incoming_keys), len(world_map.demes)))
+            for j,key in enumerate(incoming_keys):
+                incoming_messages[j] = messages[key]
+            current_pos = np.prod(incoming_messages, axis=0)
+        L[id] = current_pos
+
+    L = L/L.sum(axis=1, keepdims=True)
+    return L
+
 
 def ancs(tree, u):
     """Find all of the ancestors above a node for a tree
@@ -1333,10 +1481,10 @@ def track_lineage_in_tree(
         times,
         tree,
         world_map,
-        parameters
+        migration_rates
     ):
 
-    transition_matrices = world_map.build_transition_matrices(parameters=parameters)
+    transition_matrices = world_map.build_transition_matrices(m=migration_rates[0])
 
     parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
     
@@ -1373,6 +1521,7 @@ def track_lineage_in_tree(
 
     L = np.zeros((len(pc_combos), len(world_map.demes)))
     for element,node_combo in enumerate(pc_combos):
+        print(L)
         if node_combo[0] == node_combo[1]:
             if node_combo[0] in sample_ids:
                 node_pos = sample_locations_array[np.where(sample_ids==node_combo[0])[0][0]]
