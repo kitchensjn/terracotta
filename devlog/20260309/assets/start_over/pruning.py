@@ -148,8 +148,10 @@ def likelihood_of_tree(
             )
         else:   # collect roots here
             messages[id] = current_pos
-            loglikelihood += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
+            loglikelihood += np.log(np.sum(current_pos))
+            #loglikelihood += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
     return loglikelihood, messages
+
 
 
 
@@ -163,12 +165,10 @@ sample_locations_array = np.array([
 sample_ids = np.array([0, 1])
 
 
-m = 50
+m = 1
 s = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1])
-s = s ** 10
-print(s)
+s = s ** 0
 s = s / sum(s)
-print(s)
 
 transition_matrices = np.array([
     [
@@ -185,7 +185,6 @@ transition_matrices = np.array([
     ]
 ])
 stationary_distribution = calc_stationary_distribution(transition_matrices[-1])
-print(stationary_distribution)
 
 like, messages = likelihood_of_tree(
     parents,
@@ -197,13 +196,203 @@ like, messages = likelihood_of_tree(
     stationary_distribution
 )
 
+#print(like)
+#plot_messages(messages, ids_asc_time)
+
+
+
+
+
+ids_asc_time = np.array([0, 1, 2])
+parents = np.array([2, 2, -1])
+branch_above = np.array([[1, 1, 0]])
+sample_locations_array = np.array([
+    [0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]
+])
+sample_ids = np.array([0, 1])
+
+
+m = 1
+n = 0
+
+transition_matrices = np.array([
+    [
+        [-m, m, 0, 0, 0, 0, 0, 0, 0, 0],
+        [n, -(m+n), m, 0, 0, 0, 0, 0, 0, 0],
+        [0, n, -(m+n), m, 0, 0, 0, 0, 0, 0],
+        [0, 0, n, -(m+n), m, 0, 0, 0, 0, 0],
+        [0, 0, 0, n, -(m+n), m, 0, 0, 0, 0],
+        [0, 0, 0, 0, n, -(m+n), m, 0, 0, 0],
+        [0, 0, 0, 0, 0, n, -(m+n), m, 0, 0],
+        [0, 0, 0, 0, 0, 0, n, -(m+n), m, 0],
+        [0, 0, 0, 0, 0, 0, 0, n, -(m+n), m],
+        [0, 0, 0, 0, 0, 0, 0, 0, n, -n]
+    ]
+])
+stationary_distribution = calc_stationary_distribution(transition_matrices[-1])
+
+like, messages = likelihood_of_tree(
+    parents,
+    branch_above,
+    ids_asc_time,
+    sample_locations_array,
+    sample_ids,
+    transition_matrices,
+    stationary_distribution
+)
+
+#print(like)
+#plot_messages(messages, ids_asc_time)
+
+
+
+
+
+
+
+def _calc_current_pos_penalty(id, messages, parents, pop_sizes):
+    """Calculates current node position as product of child messages
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    messages : np.array
+        Messages being passed in tree
+    parents : np.array
+        Parent IDs for each node
+    
+    Returns
+    -------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    """
+
+    return np.multiply(1/pop_sizes, np.prod(messages[np.where(parents==id)[0]], axis=0))
+
+def likelihood_of_tree_penalty(
+        parents,
+        branch_above,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        transition_matrices,
+        pop_sizes
+    ):
+    """
+
+    Parameters
+    ----------
+    parents : np.array
+        Parent IDs for each node
+    branch_above : np.array
+        Branch lengths above each node split across epochs
+    ids_asc_time : np.array
+        Nodes IDs in time ascending order
+    sample_locations_array : np.array
+        Array
+    sample_ids : np.array
+        Defines order of sample node IDs for sample_locations_array
+    transition_matrices : np.array
+        Rate matrices for each epoch
+
+    Returns
+    -------
+    loglikelihood : float
+        Log-likelihood of tree
+    """
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.zeros((len(parents), num_demes), dtype="float64")
+    loglikelihood = 0
+    for id in ids_asc_time: 
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+        else:
+            current_pos = _calc_current_pos_penalty(
+                id,
+                messages,
+                parents,
+                pop_sizes
+            )
+        parent = parents[id]
+        if parent != -1:
+            messages[id] = _calc_branch_message(
+                id,
+                current_pos,
+                branch_above,
+                transition_matrices
+            )
+        else:   # collect roots here
+            messages[id] = current_pos
+            loglikelihood += np.log(np.sum(current_pos))
+            #loglikelihood += np.log(np.sum(np.multiply(stationary_distribution, current_pos)))
+    return loglikelihood, messages
+
+
+
+
+
+ids_asc_time = np.array([0, 1, 2])
+parents = np.array([2, 2, -1])
+branch_above = np.array([[1, 1, 0]])
+sample_locations_array = np.array([
+    [0, 0, 1, 0, 0, 0, 0, 0, 0, 0],
+    [0, 0, 0, 0, 0, 0, 0, 1, 0, 0]
+])
+sample_ids = np.array([0, 1])
+
+
+m = 1
+s = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1])
+a = 30
+s = s**a
+s = s*1000
+
+transition_matrices = np.array([
+    [
+        [-(m*(s[1]/s[0])), m*(s[1]/s[0]), 0, 0, 0, 0, 0, 0, 0, 0],
+        [m*(s[0]/s[1]), -(m*(s[0]/s[1])+m*(s[2]/s[1])), m*(s[2]/s[1]), 0, 0, 0, 0, 0, 0, 0],
+        [0, m*(s[1]/s[2]), -(m*(s[1]/s[2])+m*(s[3]/s[2])), m*(s[3]/s[2]), 0, 0, 0, 0, 0, 0],
+        [0, 0, m*(s[2]/s[3]), -(m*(s[2]/s[3])+m*(s[4]/s[3])), m*(s[4]/s[3]), 0, 0, 0, 0, 0],
+        [0, 0, 0, m*(s[3]/s[4]), -(m*(s[3]/s[4])+m*(s[5]/s[4])), m*(s[5]/s[4]), 0, 0, 0, 0],
+        [0, 0, 0, 0, m*(s[4]/s[5]), -(m*(s[4]/s[5])+m*(s[6]/s[5])), m*(s[6]/s[5]), 0, 0, 0],
+        [0, 0, 0, 0, 0, m*(s[5]/s[6]), -(m*(s[5]/s[6])+m*(s[7]/s[6])), m*(s[7]/s[6]), 0, 0],
+        [0, 0, 0, 0, 0, 0, m*(s[6]/s[7]), -(m*(s[6]/s[7])+m*(s[8]/s[7])), m*(s[8]/s[7]), 0],
+        [0, 0, 0, 0, 0, 0, 0, m*(s[7]/s[8]), -(m*(s[7]/s[8])+m*(s[9]/s[8])), m*(s[9]/s[8])],
+        [0, 0, 0, 0, 0, 0, 0, 0, m*(s[8]/s[9]), -(m*(s[8]/s[9]))]
+    ]
+])
+
+like, messages = likelihood_of_tree_penalty(
+    parents,
+    branch_above,
+    ids_asc_time,
+    sample_locations_array,
+    sample_ids,
+    transition_matrices,
+    s
+)
+
+print(like)
 plot_messages(messages, ids_asc_time)
+
+
+
 
 
 
 
 exit()
 
+
+
+
+#for i in range(len(ids_asc_time)):
+#    plt.bar(range(len(messages[i])), messages[i], width=1, color="#E95E0D")
+#    plt.savefig(f"figures/{i}.png")
+#    plt.show()
 
 
 
@@ -223,20 +412,17 @@ sample_locations_array = np.array([
 ])
 sample_ids = np.array([0, 1, 2, 3, 4, 5])
 
-m01, m02, m12, pi0, pi1 = 3, 0, 2, 3/10, 4/10
-pi2 = 1 - pi0 - pi1
-
 transition_matrices = np.array([
     [
-        [-(m01*pi1+m02*pi2), m01*pi1, m02*pi2],
-        [m01*pi0, -(m01*pi0+m12*pi2), m12*pi2],
-        [m02*pi0, m12*pi1, -(m02*pi0+m12*pi1)]
+        [-2, 1, 1],
+        [1, -2, 1],
+        [1, 1, -2]
     ]
 ])
 
 print(transition_matrices[0])
 
-stationary_distribution = np.array([pi0, pi1, pi2])
+stationary_distribution = np.array([1/3, 1/3, 1/3])
 
 print(stationary_distribution)
 
@@ -251,36 +437,6 @@ like = likelihood_of_tree(
 )
 
 print(like)
-
-
-
-exit()
-
-
-
-transition_matrix = np.array([
-    [-10, 10, 0],
-    [0.001, -0.501, 0.5],
-    [0, 0.001, -0.001]
-])
-
-stationary_distribution_forwards = calc_stationary_distribution(transition_matrix)
-
-backwards = convert_to_opposite_rate_matrix(transition_matrix)
-
-stationary_distribution_backwards = calc_stationary_distribution(backwards)
-
-forwards = convert_to_opposite_rate_matrix(backwards)
-
-
-print(forwards)
-print(stationary_distribution_forwards)
-print(backwards)
-print(stationary_distribution_backwards)
-
-
-
-exit()
 
 
 # Tree from `geiger` package
@@ -313,7 +469,7 @@ transition_matrices = np.array([
     ]
 ])
 
-stationary_distribution = calc_stationary_distribution(transition_matrices)
+stationary_distribution = calc_stationary_distribution(transition_matrices[-1])
 stationary_distribution = np.array([1/3, 1/3, 1/3])
 
 like = likelihood_of_tree(

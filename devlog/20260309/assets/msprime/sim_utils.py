@@ -170,25 +170,34 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rate, migration_mo
             modifier = migration_modifier_variables.get(migration_formatter[1], -1)
             if modifier == -1:
                 raise RuntimeError("Did not find rate.")
-        N_0 = world_map.get_deme_suitability_at_time(connection["deme_0"], migration_formatter[0])
-        N_1 = world_map.get_deme_suitability_at_time(connection["deme_1"], migration_formatter[0])
-        demography.set_migration_rate(source="Pop_"+str(connection["deme_0"]), dest="Pop_"+str(connection["deme_1"]), rate=migration_rate*N_1*modifier)
+        
+        i_0 = world_map.demes.loc[world_map.demes["id"]==connection["deme_0"]].index[0]
+        i_1 = world_map.demes.loc[world_map.demes["id"]==connection["deme_1"]].index[0]
+        epoch_time = migration_formatter[0]
+        demography.set_migration_rate(
+            source="Pop_"+str(connection["deme_0"]),
+            dest="Pop_"+str(connection["deme_1"]),
+            rate=migration_rate*(world_map.demes[f"suitability_{epoch_time}"][i_1]/world_map.demes[f"suitability_{epoch_time}"][i_0])*modifier
+        )
+        #N_0 = world_map.get_deme_suitability_at_time(connection["deme_0"], migration_formatter[0])
+        #N_1 = world_map.get_deme_suitability_at_time(connection["deme_1"], migration_formatter[0])
+        #demography.set_migration_rate(source="Pop_"+str(connection["deme_0"]), dest="Pop_"+str(connection["deme_1"]), rate=migration_rate*(N_1/N_0)*modifier)
         for epoch in range(2,len(migration_formatter),2):
+            epoch_time = migration_formatter[epoch]
             try:
                 modifier = float(migration_formatter[epoch+1])
             except:
                 modifier = migration_modifier_variables.get(migration_formatter[epoch+1], -1)
                 if modifier == -1:
                     raise RuntimeError("Did not find rate.")
-            N_0 = world_map.get_deme_suitability_at_time(connection["deme_0"], migration_formatter[epoch])
-            N_1 = world_map.get_deme_suitability_at_time(connection["deme_1"], migration_formatter[epoch])
+            #N_0 = world_map.get_deme_suitability_at_time(connection["deme_0"], migration_formatter[epoch])
+            #N_1 = world_map.get_deme_suitability_at_time(connection["deme_1"], migration_formatter[epoch])
             demography.add_migration_rate_change(
                 time=float(migration_formatter[epoch]),
                 source="Pop_"+str(connection["deme_0"]),
                 dest="Pop_"+str(connection["deme_1"]),
-                rate=migration_rate*N_1*modifier
+                rate=migration_rate*(world_map.demes[f"suitability_{epoch_time}"][i_1]/world_map.demes[f"suitability_{epoch_time}"][i_0])*modifier
             )
-    print(demography)
     return demography
 
 def _simulate_independent_trees(

@@ -1,5 +1,4 @@
 import sys
-sys.path.append("/Users/jameskitchens/Documents/Manuscripts/terracotta/simulations")
 import sim_utils
 import pandas as pd
 import math
@@ -21,11 +20,11 @@ sim_utils.create_hexagonal_tri_grid(
 )
 
 demes = pd.read_csv(f"{output_directory}/demes.tsv", sep="\t")
-#demes["suitability"] = demes["suitability"].astype(str)
-#for i,deme in demes.iterrows():
-#    distance_from_center = math.sqrt(deme["xcoord"]**2 + deme["ycoord"]**2)
-#    demes.loc[i, "suitability"] = str(max(0.001, 1 - distance_from_center/5))
-#demes.to_csv(f"{output_directory}/demes.tsv", sep="\t", index=False)
+demes["suitability"] = demes["suitability"].astype(str)
+for i,deme in demes.iterrows():
+    distance_from_center = math.sqrt(deme["xcoord"]**2 + deme["ycoord"]**2)
+    demes.loc[i, "suitability"] = str(max(0.001, 1 - distance_from_center/5))
+demes.to_csv(f"{output_directory}/demes.tsv", sep="\t", index=False)
 
 sim_utils.create_random_samples_file(
     demes_path=f"{output_directory}/demes.tsv",
@@ -38,7 +37,7 @@ sim_utils.create_trees_files(
     demes_path=f"{output_directory}/demes.tsv",
     connections_path=f"{output_directory}/connections.tsv",
     samples_path=f"{output_directory}/samples.tsv",
-    number_of_trees=200,
+    number_of_trees=100,
     pop_size=10,
     migration_rate=0.01,
     output_directory="dataset"
