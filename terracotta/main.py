@@ -18,6 +18,7 @@ import time
 import shapely
 import shapely.plotting as plotting
 from shapely.geometry import Polygon
+from numba import prange, njit
 
 
 
@@ -438,6 +439,115 @@ def _deconstruct_trees(trees, epochs, time_bins=None):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
     return pl, bal, tbw, iat, unique_branch_lengths
 
+@njit()
+def _calc_current_pos_log(id, messages, parents):
+    """Calculates current node position as product of child messages
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    messages : np.array
+        Messages being passed in tree
+    parents : np.array
+        Parent IDs for each node
+    
+    Returns
+    -------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    """
+
+    return np.sum(messages[np.where(parents==id)[0]], axis=0)
+
+@njit()
+def logsumexp_custom(x, axis):
+    c = np.max(x)
+    return c + np.log(np.sum(np.exp(x - c), axis=axis))
+
+def _calc_branch_message_log(id, current_pos, branch_above, transition_matrices):
+    """Calculates the message to be passed along a branch above specified node
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    branch_above : np.array
+        Branch lengths above each node split across epochs
+    transition_matrices : np.array
+        Rate matrices for each epoch
+
+    Returns
+    -------
+    message : np.array
+        Probability distribution for location of lineage given subtree below
+    """
+
+    bl = branch_above[:,id]
+    included_epochs = np.where(bl > 0)[0]
+    P = np.eye(len(current_pos))
+    for epoch in included_epochs:
+        P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
+    message = logsumexp_custom(current_pos + np.log(P).T, axis=1)
+    return message
+
+def likelihood_of_tree_log(
+        parents,
+        branch_above,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        transition_matrices
+    ):
+    """
+
+    Parameters
+    ----------
+    parents : np.array
+        Parent IDs for each node
+    branch_above : np.array
+        Branch lengths above each node split across epochs
+    ids_asc_time : np.array
+        Nodes IDs in time ascending order
+    sample_locations_array : np.array
+        Array
+    sample_ids : np.array
+        Defines order of sample node IDs for sample_locations_array
+    transition_matrices : np.array
+        Rate matrices for each epoch
+
+    Returns
+    -------
+    loglikelihood : float
+        Log-likelihood of tree
+    """
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.zeros((len(parents), num_demes), dtype="float64")
+    loglikelihood = 0
+    for id in ids_asc_time: 
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+        else:
+            current_pos = _calc_current_pos_log(
+                id,
+                messages,
+                parents
+            )
+        parent = parents[id]
+        if parent != -1:
+            messages[id] = _calc_branch_message_log(
+                id,
+                current_pos,
+                branch_above,
+                transition_matrices
+            )
+        else:   # collect roots here
+            loglikelihood += logsumexp_custom(current_pos, axis=0)
+    return loglikelihood
+
 def _calc_current_pos(id, messages, parents):
     """Calculates current node position as product of child messages
 
@@ -552,11 +662,19 @@ def _process_trees(
 
     composite_likelihood = 0
     for i in range(len(branch_above)):
-        like = likelihood_of_tree(
+        #like = likelihood_of_tree(
+        #    parents=parents[i],
+        #    branch_above=branch_above[i],
+        #    ids_asc_time=ids_asc_time[i],
+        #    sample_locations_array=sample_locations_array,
+        #    sample_ids=sample_ids,
+        #    transition_matrices=transition_matrices
+        #)
+        like = likelihood_of_tree_log(
             parents=parents[i],
             branch_above=branch_above[i],
             ids_asc_time=ids_asc_time[i],
-            sample_locations_array=sample_locations_array,
+            sample_locations_array=np.log(sample_locations_array),
             sample_ids=sample_ids,
             transition_matrices=transition_matrices
         )
@@ -594,7 +712,8 @@ def _calc_composite_likelihood_for_parameters(
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
         sample_ids=sample_ids,
-        transition_matrices=transition_matrices
+        transition_matrices=transition_matrices,
+        precomputed_transitions=precomputed_transitions
     )
     if output_file is not None:
         with open(output_file, "a") as outfile:
@@ -644,12 +763,13 @@ def run(
         trees.append(tree.first())
 
     sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+    sample_locations_array = np.maximum(sample_locations_array, 1e-99)
     parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
 
     res = minimize(
         fun=_calc_composite_likelihood_for_parameters,
-        x0=np.array([np.log(0.1), 0.5, np.log(1)]),
-        bounds=[(-10, 10), (0, 1), (-10, 10)],
+        x0=np.array([np.log(0.1), 0.5]),
+        bounds=[(-10, 10), (0, 1)],
         args=(
             world_map,
             parents,
