@@ -712,8 +712,7 @@ def _calc_composite_likelihood_for_parameters(
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
         sample_ids=sample_ids,
-        transition_matrices=transition_matrices,
-        precomputed_transitions=precomputed_transitions
+        transition_matrices=transition_matrices
     )
     if output_file is not None:
         with open(output_file, "a") as outfile:
