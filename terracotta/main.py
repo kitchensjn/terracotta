@@ -465,7 +465,14 @@ def logsumexp_custom(x, axis):
     c = np.max(x)
     return c + np.log(np.sum(np.exp(x - c), axis=axis))
 
-def _calc_branch_message_log(id, current_pos, branch_above, transition_matrices):
+@njit()
+def _calc_branch_message_log(
+        id,
+        current_pos,
+        branch_above,
+        unique_branch_lengths,
+        precomputed_transitions
+    ):
     """Calculates the message to be passed along a branch above specified node
 
     Parameters
@@ -489,17 +496,20 @@ def _calc_branch_message_log(id, current_pos, branch_above, transition_matrices)
     included_epochs = np.where(bl > 0)[0]
     P = np.eye(len(current_pos))
     for epoch in included_epochs:
-        P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
+        bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
+        P = np.dot(P, precomputed_transitions[epoch][bl_index])
     message = logsumexp_custom(current_pos + np.log(P).T, axis=1)
     return message
 
+@njit()
 def likelihood_of_tree_log(
         parents,
         branch_above,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices
+        unique_branch_lengths,
+        precomputed_transitions
     ):
     """
 
@@ -542,7 +552,8 @@ def likelihood_of_tree_log(
                 id,
                 current_pos,
                 branch_above,
-                transition_matrices
+                unique_branch_lengths,
+                precomputed_transitions
             )
         else:   # collect roots here
             loglikelihood += logsumexp_custom(current_pos, axis=0)
@@ -657,26 +668,20 @@ def _process_trees(
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices
+        unique_branch_lengths,
+        precomputed_transitions
     ):
 
     composite_likelihood = 0
-    for i in range(len(branch_above)):
-        #like = likelihood_of_tree(
-        #    parents=parents[i],
-        #    branch_above=branch_above[i],
-        #    ids_asc_time=ids_asc_time[i],
-        #    sample_locations_array=sample_locations_array,
-        #    sample_ids=sample_ids,
-        #    transition_matrices=transition_matrices
-        #)
+    for i in prange(len(branch_above)):
         like = likelihood_of_tree_log(
             parents=parents[i],
             branch_above=branch_above[i],
             ids_asc_time=ids_asc_time[i],
             sample_locations_array=np.log(sample_locations_array),
             sample_ids=sample_ids,
-            transition_matrices=transition_matrices
+            unique_branch_lengths=unique_branch_lengths,
+            precomputed_transitions=precomputed_transitions
         )
         composite_likelihood += like
     return abs(composite_likelihood)
@@ -712,8 +717,10 @@ def _calc_composite_likelihood_for_parameters(
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
         sample_ids=sample_ids,
-        transition_matrices=transition_matrices
+        unique_branch_lengths=unique_branch_lengths,
+        precomputed_transitions=precomputed_transitions
     )
+
     if output_file is not None:
         with open(output_file, "a") as outfile:
             outfile.write(f"{parameters}\t{-composite_likelihood}\n")
@@ -765,10 +772,20 @@ def run(
     sample_locations_array = np.maximum(sample_locations_array, 1e-99)
     parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = _deconstruct_trees(trees=trees, epochs=world_map.epochs, time_bins=time_bins)
 
+    start = []
+    bounds = []
+    for p in world_map.parameters:
+        if p != "alpha":
+            start.append(np.log(1))
+            bounds.append((-10, 10))
+        else:
+            start.append(1)
+            bounds.append((0, 1))
+
     res = minimize(
         fun=_calc_composite_likelihood_for_parameters,
-        x0=np.array([np.log(0.1), 0.5]),
-        bounds=[(-10, 10), (0, 1)],
+        x0=np.array(start),
+        bounds=bounds,
         args=(
             world_map,
             parents,

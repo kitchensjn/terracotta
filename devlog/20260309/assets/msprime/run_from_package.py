@@ -7,8 +7,7 @@ mle, likelihood = tct.run(
     connections_path="dataset/connections.tsv",
     samples_path="dataset/samples.tsv",
     trees_dir_path="dataset/trees",
-    output_file="dataset/output.tsv",
-    verbose=True
+    output_file="dataset/output.tsv"
 )
 
 print(mle)
