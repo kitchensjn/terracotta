@@ -74,6 +74,14 @@ class WorldMap:
             From connections.tsv file
         samples : pandas.DataFrame
             From samples.tsv file (optional)
+
+        Attributes
+        ----------
+        demes
+        connections
+        samples
+        epochs
+        parameters
         """
 
         self.parameters = ["coefficient", "alpha"]
@@ -169,6 +177,18 @@ class WorldMap:
         return pd.Series([self.get_deme_suitability_at_time(id, time) for id in self.demes["id"]])
 
     def get_connection_migration_modifier_at_time(self, id, time):
+        """Extracts the migration modifier for a connection at time
+
+        Parameters
+        ----------
+        id : int
+        time : int or float
+
+        Returns
+        -------
+        migration_modifier : str
+            Modifier of connection at specified time
+        """
         connection_parameter = self.connections.loc[self.connections["id"]==id,"migration_modifier"].iloc[0]
         epochs = connection_parameter.split(",")
         for t in range(len(epochs)-1):
@@ -177,7 +197,8 @@ class WorldMap:
             end = float(epochs[t+1].split(":")[0])
             if (time >= start) and (time < end):
                 return details[1]
-        return epochs[-1].split(":")[1]
+        migration_modifier = epochs[-1].split(":")[1]
+        return migration_modifier
 
     def get_all_connection_migration_modifiers_at_time(self, time):
         return pd.Series([self.get_connection_migration_modifier_at_time(id, time) for id in self.connections["id"]])
@@ -662,6 +683,7 @@ def likelihood_of_tree(
             loglikelihood += np.log(np.sum(current_pos))
     return loglikelihood
 
+@njit(parallel=True)
 def _process_trees(
         parents,
         branch_above,
