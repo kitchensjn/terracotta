@@ -265,8 +265,8 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
 
     Parameters
     ----------
-    branch_lengths : np.ndarray
-        Array of branch lengths of increasing size
+    branch_lengths : list
+        Arrays of unique branch lengths in each epoch
     transition_matrix : np.ndarray
         Instantaneous migration rate matrix, output of WorldMap.build_transition_matrices()
     fast : bool
@@ -274,8 +274,8 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
     
     Returns
     -------
-    transitions : np.ndarray
-        3D array with transitions probabilities for each branch length
+    all_transitions : list
+        Arrays of transition probabilities associated with each branch length, one array per epoch
     """
 
     all_transitions = []
@@ -546,8 +546,8 @@ def likelihood_of_tree_log(
         Array
     sample_ids : np.array
         Defines order of sample node IDs for sample_locations_array
-    transition_matrices : np.array
-        Rate matrices for each epoch
+    unique_branch_lengths :
+    precomputed_transitions :
 
     Returns
     -------
@@ -578,109 +578,6 @@ def likelihood_of_tree_log(
             )
         else:   # collect roots here
             loglikelihood += logsumexp_custom(current_pos, axis=0)
-    return loglikelihood
-
-def _calc_current_pos(id, messages, parents):
-    """Calculates current node position as product of child messages
-
-    Parameters
-    ----------
-    id : int
-        ID of node
-    messages : np.array
-        Messages being passed in tree
-    parents : np.array
-        Parent IDs for each node
-    
-    Returns
-    -------
-    current_pos : np.array
-        Probability distribution of node's current position given subtree below
-    """
-
-    return np.prod(messages[np.where(parents==id)[0]], axis=0)
-
-def _calc_branch_message(id, current_pos, branch_above, transition_matrices):
-    """Calculates the message to be passed along a branch above specified node
-
-    Parameters
-    ----------
-    id : int
-        ID of node
-    current_pos : np.array
-        Probability distribution of node's current position given subtree below
-    branch_above : np.array
-        Branch lengths above each node split across epochs
-    transition_matrices : np.array
-        Rate matrices for each epoch
-
-    Returns
-    -------
-    message : np.array
-        Probability distribution for location of lineage given subtree below
-    """
-
-    bl = branch_above[:,id]
-    included_epochs = np.where(bl > 0)[0]
-    P = np.eye(len(current_pos))
-    for epoch in included_epochs:
-        P = np.dot(P, linalg.expm(transition_matrices[epoch]*bl[epoch]))
-    message = np.dot(current_pos, P)
-    return message
-
-def likelihood_of_tree(
-        parents,
-        branch_above,
-        ids_asc_time,
-        sample_locations_array,
-        sample_ids,
-        transition_matrices
-    ):
-    """
-
-    Parameters
-    ----------
-    parents : np.array
-        Parent IDs for each node
-    branch_above : np.array
-        Branch lengths above each node split across epochs
-    ids_asc_time : np.array
-        Nodes IDs in time ascending order
-    sample_locations_array : np.array
-        Array
-    sample_ids : np.array
-        Defines order of sample node IDs for sample_locations_array
-    transition_matrices : np.array
-        Rate matrices for each epoch
-
-    Returns
-    -------
-    loglikelihood : float
-        Log-likelihood of tree
-    """
-
-    num_demes = len(sample_locations_array[0])
-    messages = np.zeros((len(parents), num_demes), dtype="float64")
-    loglikelihood = 0
-    for id in ids_asc_time: 
-        if id in sample_ids:
-            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
-        else:
-            current_pos = _calc_current_pos(
-                id,
-                messages,
-                parents
-            )
-        parent = parents[id]
-        if parent != -1:
-            messages[id] = _calc_branch_message(
-                id,
-                current_pos,
-                branch_above,
-                transition_matrices
-            )
-        else:   # collect roots here
-            loglikelihood += np.log(np.sum(current_pos))
     return loglikelihood
 
 @njit(parallel=True)
@@ -720,6 +617,13 @@ def _calc_composite_likelihood_for_parameters(
         output_file=None,
         verbose=False
     ):
+    """
+    Parameters
+    ----------
+
+    Returns
+    -------
+    """
 
     for p in range(len(world_map.parameters)):
         if world_map.parameters[p] != "alpha":
@@ -760,12 +664,35 @@ def run(
         output_file=None,
         verbose=False
     ):
-    """
+    """Identify the most likely combination of parameters
+
+    Uses an optimization algorithm to search the parameter space. 
+
     Parameters
     ----------
+    demes_path : str
+        Path to the `demes.tsv` file
+    connections_path : str
+        Path to the `connections.tsv` file
+    samples_path : str
+        Path to the `samples.tsv` file
+    trees_dir_path : str
+        Path to the `trees/` folder
+    chop_time : 
+        Time at which to chop trees (default is `None`, ignored)
+    time_bins : numpy.ndarray
+        Sequence of times to group node times into (default is `None`, ignored)
+    output_file : str
+        Path to an output file to write to (default is `None`, ignored)
+    verbose : bool
+        Whether to print log-likelihoods to the terminal (default is False)
 
     Returns
     -------
+    final : numpy.ndarray
+        Combination of parameters
+    -res.fun : float
+        Log-likelihood of the parameter combination
     """
     
     if output_file is not None:
