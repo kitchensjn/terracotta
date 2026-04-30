@@ -9,6 +9,16 @@ import msprime
 
 
 def _populate_vertices(num_rings, gap_between_rings=1):
+    """
+    Parameters
+    ----------
+    num_rings
+    gap_between_rings : int
+
+    Returns
+    -------
+    """
+
     if num_rings < 0:
         raise RuntimeError("`num_rings` must be >=0.")
 
@@ -51,6 +61,21 @@ def _populate_vertices(num_rings, gap_between_rings=1):
     return vertices
 
 def _populate_faces(num_rings):
+    """Creates all of the edges in hexagonal world map
+
+    Repurposed from other code so not the most efficient
+
+    Parameters
+    ----------
+    num_rings : int
+        Number of rings in the hexagonal world map
+    
+    Returns
+    -------
+    faces : pandas.DataFrame
+        Associating demes with polygon faces
+    """
+
     triangles = []
     starting_a = 0
     starting_b = 1
@@ -106,6 +131,20 @@ def get_num_vertices_in_ring(ring):
     return 6 + edge_length*6
 
 def get_starting_vertex_of_ring(ring):
+    """
+    First deme in ring is always positioned directly above center
+
+    Parameters
+    ----------
+    ring : int
+        ID of ring
+    
+    Returns
+    -------
+    total : int
+        ID of first deme in that ring
+    """
+
     if ring < 0:
         raise RuntimeError("`num_rings` must be >=0.")
     
@@ -115,6 +154,18 @@ def get_starting_vertex_of_ring(ring):
     return total
 
 def get_number_of_demes(num_rings):
+    """Calculates the number of demes in a world map with `num_rings` rings
+
+    Parameters
+    ----------
+    num_rings : int
+        Number of rings in the hexagonal world map
+    
+    Returns
+    -------
+    int : number of demes
+    """
+
     return get_starting_vertex_of_ring(num_rings+1)
     
 def create_random_samples_file(
@@ -128,7 +179,7 @@ def create_random_samples_file(
     Parameters
     ----------
     demes_path : str
-        Path to the demes file
+        Path to the `demes.tsv` file
     number_of_samples : int
         Number of samples to be placed on the map
     allow_multiple_samples_per_deme : bool
@@ -144,16 +195,24 @@ def create_random_samples_file(
         for id,sample in enumerate(random_samples):
             samples_file.write(f"{id}\t{sample}\n")
 
-def _set_up_msprime_demography(world_map, pop_size, migration_rate, migration_modifier_variables):
+def _set_up_msprime_demography(
+        world_map,
+        pop_size,
+        migration_rate,
+        migration_modifier_variables
+    ):
     """Creates the msprime.Demography object for simulating trees
 
     Parameters
     ----------
     world_map : terracotta.WorldMap
+        Custom object built using the `demes.tsv`, `connections.tsv`, and `samples.tsv` files
     pop_size : int
         The population size of each deme
-    migration_rates : dict
-        Key is the type of connection and value is the migration rate of that connection type
+    migration_rate : float
+        Single migration rate between neighboring demes (default=None, ignored)
+    migration_modifier_variables : dict
+        Associates string variable from `connections.tsv` with modification value
     """
 
     demography = msprime.Demography()
@@ -179,9 +238,6 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rate, migration_mo
             dest="Pop_"+str(connection["deme_1"]),
             rate=migration_rate*(world_map.demes[f"suitability_{epoch_time}"][i_1]/world_map.demes[f"suitability_{epoch_time}"][i_0])*modifier
         )
-        #N_0 = world_map.get_deme_suitability_at_time(connection["deme_0"], migration_formatter[0])
-        #N_1 = world_map.get_deme_suitability_at_time(connection["deme_1"], migration_formatter[0])
-        #demography.set_migration_rate(source="Pop_"+str(connection["deme_0"]), dest="Pop_"+str(connection["deme_1"]), rate=migration_rate*(N_1/N_0)*modifier)
         for epoch in range(2,len(migration_formatter),2):
             epoch_time = migration_formatter[epoch]
             try:
@@ -190,8 +246,6 @@ def _set_up_msprime_demography(world_map, pop_size, migration_rate, migration_mo
                 modifier = migration_modifier_variables.get(migration_formatter[epoch+1], -1)
                 if modifier == -1:
                     raise RuntimeError("Did not find rate.")
-            #N_0 = world_map.get_deme_suitability_at_time(connection["deme_0"], migration_formatter[epoch])
-            #N_1 = world_map.get_deme_suitability_at_time(connection["deme_1"], migration_formatter[epoch])
             demography.add_migration_rate_change(
                 time=float(migration_formatter[epoch]),
                 source="Pop_"+str(connection["deme_0"]),
@@ -213,15 +267,17 @@ def _simulate_independent_trees(
     Parameters
     ----------
     world_map : terracotta.WorldMap
+        Custom object built using the `demes.tsv`, `connections.tsv`, and `samples.tsv` files
     number_of_trees : int
         The number of independent trees to simulate
     ploidy : int
         The ploidy of the samples
-    allow_multiple_samples_per_deme : bool
     pop_size : int
         The population size of each deme
-    migration_rates : dict
-        Key is the type of connection and value is the migration rate of that connection type
+    migration_rate : float
+        Single migration rate between neighboring demes (default=None, ignored)
+    migration_modifier_variables : dict
+        Associates string variable from `connections.tsv` with modification value
     """
 
     demography = _set_up_msprime_demography(
@@ -256,23 +312,23 @@ def create_trees_files(
     """
     Parameters
     ----------
-    demes_path : string
-    samples_path : string
+    demes_path : str
+        Path to the `demes.tsv` file
+    connections_path : str
+        Path to the `connections.tsv` file
+    samples_path : str
+        Path to the `samples.tsv` file
     number_of_trees : int
         The number of independent trees to simulate
     pop_size : int
         The population size of each deme
-    migration_rates : dict
-        Key is the type of connection and value is the migration rate of that connection type.
+    migration_rate : float
+        Single migration rate between neighboring demes (default=None, ignored)
+    migration_modifier_variables : dict
     ploidy : int
         The ploidy of the individuals. (default=1, haploid)
-    record_provenance : bool
-        Whether msprime should record the provenance of the trees. (default=True)
-    migration_rate : float
-        Single migration rate between neighboring demes. (default=None, ignored)
-    
-    output_directory : string
-        Path to directory where file will be written. (default=".")
+    output_directory : str
+        Path to directory where files will be written. (default=".")
     """
 
     demes = pd.read_csv(demes_path, sep="\t")

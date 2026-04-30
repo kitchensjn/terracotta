@@ -112,13 +112,13 @@ def likelihood_of_tree(
                 transition_matrices
             )
         else:   # collect roots here
+            messages[id] = current_pos
             loglikelihood += np.log(np.sum(current_pos))
     return loglikelihood, messages
 
 
 def convert_to_opposite_rate_matrix(transition_matrix):
     stationary_distribution = calc_stationary_distribution(transition_matrix)
-    print(stationary_distribution)
     opposite = np.zeros((len(transition_matrix), len(transition_matrix)))
     for i in range(len(transition_matrix)):
         for j in range(len(transition_matrix)):
@@ -325,6 +325,7 @@ def likelihood_of_tree_log(
 
 
 
+
 ids_asc_time = np.array([0, 1, 2, 3, 4, 5, 7, 6, 8, 9, 10])
 parents = np.array([6, 6, 8, 7, 7, 10, 8, 9, 9, 10, -1])
 branch_above = np.array([[1, 1, 1.5, 0.5, 0.5, 2.5, 0.5, 2.0, 1.0, 0.5, 0]])
@@ -341,9 +342,9 @@ sample_ids = np.array([0, 1, 2, 3, 4, 5])
 
 transition_matrices = np.array([
     [
-        [-2, 2, 0],
-        [1, -3, 2],
-        [0, 1, -1]
+        [-3, 2, 1],
+        [1, -2, 1],
+        [1, 1, -2]
     ]
 ])
 

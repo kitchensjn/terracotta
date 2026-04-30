@@ -204,9 +204,9 @@ class WorldMap:
         return pd.Series([self.get_connection_migration_modifier_at_time(id, time) for id in self.connections["id"]])
 
     def build_transition_matrices(self, parameters):
-        """Builds the transition matrix based on the world map and migration rates
+        """Builds the transition matrix based on the world map and migration rate parameters
 
-        Row is the starting deme, column is the next deme backwards in time.
+        Row is the source deme, column is the target deme backwards in time.
 
         Parameters
         ----------
@@ -244,12 +244,14 @@ class WorldMap:
         return transition_matrix
 
     def build_sample_locations_array(self):
-        """
+        """Formats the sample locations into probability distribution vectors
 
         Returns
         -------
-        sample_locations_array
-        sample_ids
+        sample_locations_array : numpy.ndarray
+            Probability distribution vector for each sample location (generally 0 in all demes except one)
+        sample_ids : numpy.ndarray
+            Order of sample IDs for `sample_locations_array`
         """
 
         if (self.samples is None):
@@ -267,8 +269,8 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
     ----------
     branch_lengths : list
         Arrays of unique branch lengths in each epoch
-    transition_matrix : np.ndarray
-        Instantaneous migration rate matrix, output of WorldMap.build_transition_matrices()
+    transition_matrices : np.ndarray
+        Instantaneous migration rate matrices, output of WorldMap.build_transition_matrices()
     fast : bool
         Whether to use the faster but less numerically stable algorithm (default is True)
     
@@ -303,6 +305,16 @@ def precalculate_transitions(branch_lengths, transition_matrices, fast=True):
         all_transitions.append(transitions)
     return all_transitions
 
+def convert_to_opposite_rate_matrix(transition_matrix):
+    stationary_distribution = calc_stationary_distribution(transition_matrix)
+    opposite = np.zeros((len(transition_matrix), len(transition_matrix)))
+    for i in range(len(transition_matrix)):
+        for j in range(len(transition_matrix)):
+            if i != j:
+                opposite[i][j] = (stationary_distribution[j] * transition_matrix[j][i]) / stationary_distribution[i]
+    diag = -np.sum(opposite, axis=1)
+    np.fill_diagonal(opposite, diag)
+    return opposite
 
 def ts_to_nx(ts):
     """Covert tskit.TreeSequence to networkx graph
@@ -396,6 +408,29 @@ def nx_bin_ts(ts, bins):
     return ts_out
 
 def _deconstruct_tree(tree, epochs, time_bins=None):
+    """Converts a `tskit.Tree` into primitive elements that can be passed to numba
+
+    Parameters
+    ----------
+    tree : tskit.Tree
+        Single tree object
+    epochs : numpy.ndarray
+        Order timing of epoch starts from terracotta.WorldMap
+    time_bins : numpy.ndarray
+        Sequence of times to group node times into (default is `None`, ignored)
+
+    Returns
+    -------
+    parents : numpy.ndarray
+        Parent IDs for each node
+    branch_above : numpy.ndarray
+        Branch above length (split across epochs) for each node
+    time_bin_widths : numpy.ndarray
+        Time bin widths for each node (All 1 if `time_bins=None`)
+    ids_asc_time : numpy.ndarray
+        Nodes IDs in time ascending order
+    """
+
     num_nodes = len(tree.postorder())
     parents = np.full(num_nodes, -1, dtype="int64")
     branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
@@ -426,7 +461,16 @@ def _deconstruct_tree(tree, epochs, time_bins=None):
     return parents, branch_above, time_bin_widths, ids_asc_time
 
 def _deconstruct_trees(trees, epochs, time_bins=None):
-    """
+    """Converts list of `tskit.Tree`s into primitive elements that can be passed to numba
+
+    Parameters
+    ----------
+    trees : list
+        tskit.Tree objects
+    epochs : numpy.ndarray
+        Order timing of epoch starts from terracotta.WorldMap
+    time_bins : numpy.ndarray
+        Sequence of times to group node times into (default is `None`, ignored)
 
     Returns
     -------
@@ -437,9 +481,9 @@ def _deconstruct_trees(trees, epochs, time_bins=None):
     tbw : list
         Arrays containaing time bin widths for each node, one array per tree
     iat : list
-
+        Arrays of nodes IDs in time ascending order, one array per tree
     unique_branch_lengths : list
-        
+        List of lists containing unique branch lengths in each epoch
     """
     
     pl = []
@@ -471,7 +515,7 @@ def _calc_current_pos_log(id, messages, parents):
     messages : np.array
         Messages being passed in tree
     parents : np.array
-        Parent IDs for each node
+        Parent IDs for each node in tree
     
     Returns
     -------
@@ -483,12 +527,20 @@ def _calc_current_pos_log(id, messages, parents):
 
 @njit()
 def logsumexp_custom(x, axis):
+    """LogSumExp function that can be accessed from numba
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Vector to transform
+    axis : int
+        Which axis of the numpy.array to transform over
+    """
     c = np.max(x)
     return c + np.log(np.sum(np.exp(x - c), axis=axis))
 
 @njit()
 def _calc_branch_message_log(
-        id,
         current_pos,
         branch_above,
         unique_branch_lengths,
@@ -498,14 +550,14 @@ def _calc_branch_message_log(
 
     Parameters
     ----------
-    id : int
-        ID of node
     current_pos : np.array
         Probability distribution of node's current position given subtree below
     branch_above : np.array
         Branch lengths above each node split across epochs
-    transition_matrices : np.array
-        Rate matrices for each epoch
+    unique_branch_lengths : list
+        List of lists containing unique branch lengths in each epoch
+    precomputed_transitions : list
+        Arrays of transition probabilities associated with each branch length, one array per epoch
 
     Returns
     -------
@@ -513,11 +565,10 @@ def _calc_branch_message_log(
         Probability distribution for location of lineage given subtree below
     """
 
-    bl = branch_above[:,id]
-    included_epochs = np.where(bl > 0)[0]
+    included_epochs = np.where(branch_above > 0)[0]
     P = np.eye(len(current_pos))
     for epoch in included_epochs:
-        bl_index = np.where(unique_branch_lengths[epoch]==bl[epoch])[0][0]
+        bl_index = np.where(unique_branch_lengths[epoch]==branch_abov[epoch])[0][0]
         P = np.dot(P, precomputed_transitions[epoch][bl_index])
     message = logsumexp_custom(current_pos + np.log(P).T, axis=1)
     return message
@@ -536,18 +587,20 @@ def likelihood_of_tree_log(
 
     Parameters
     ----------
-    parents : np.array
+    parents : numpy.ndarray
         Parent IDs for each node
-    branch_above : np.array
-        Branch lengths above each node split across epochs
-    ids_asc_time : np.array
+    branch_above : numpy.ndarray
+        Branch above length (split across epochs) for each node
+    ids_asc_time : numpy.ndarray
         Nodes IDs in time ascending order
-    sample_locations_array : np.array
-        Array
-    sample_ids : np.array
-        Defines order of sample node IDs for sample_locations_array
-    unique_branch_lengths :
-    precomputed_transitions :
+    sample_locations_array : numpy.ndarray
+        Probability distribution vector for each sample location (generally 0 in all demes except one)
+    sample_ids : numpy.ndarray
+        Order of sample IDs for `sample_locations_array`
+    unique_branch_lengths : list
+        List of lists containing unique branch lengths in each epoch
+    precomputed_transitions : list
+        Arrays of transition probabilities associated with each branch length, one array per epoch
 
     Returns
     -------
@@ -570,9 +623,8 @@ def likelihood_of_tree_log(
         parent = parents[id]
         if parent != -1:
             messages[id] = _calc_branch_message_log(
-                id,
                 current_pos,
-                branch_above,
+                branch_above[:,id],
                 unique_branch_lengths,
                 precomputed_transitions
             )
@@ -590,6 +642,22 @@ def _process_trees(
         unique_branch_lengths,
         precomputed_transitions
     ):
+    """
+    parents : list
+        Arrays containing ID of parent for each node, one array per tree
+    branch_above : list
+        Arrays containing branch above length (split across epochs) for each node, one array per tree
+    ids_asc_time : List
+        Arrays of nodes IDs in time ascending order, one array per tree
+    sample_locations_array : numpy.ndarray
+        Probability distribution vector for each sample location (generally 0 in all demes except one)
+    sample_ids : numpy.ndarray
+        Order of sample IDs for `sample_locations_array`
+    unique_branch_lengths : list
+        List of lists containing unique branch lengths in each epoch
+    precomputed_transitions : list
+        Arrays of transition probabilities associated with each branch length, one array per epoch
+    """
 
     composite_likelihood = 0
     for i in prange(len(branch_above)):
@@ -620,9 +688,31 @@ def _calc_composite_likelihood_for_parameters(
     """
     Parameters
     ----------
+    parameters : numpy.ndarray
+        Combination of parameters used to build the migration surface
+    world_map : terracotta.WorldMap
+        Custom object built using the `demes.tsv`, `connections.tsv`, and `samples.tsv` files
+    parents : list
+        Arrays containing ID of parent for each node, one array per tree
+    branch_above : list
+        Arrays containing branch above length (split across epochs) for each node, one array per tree
+    unique_branch_lengths : list
+        List of lists containing unique branch lengths in each epoch
+    ids_asc_time : list
+        Arrays of nodes IDs in time ascending order, one array per tree
+    sample_locations_array : numpy.ndarray
+        Probability distribution vector for each sample location (generally 0 in all demes except one)
+    sample_ids : numpy.ndarray
+        Order of sample IDs for `sample_locations_array`
+    output_file : str
+        Path to an output file to write to (default is `None`, ignored)
+    verbose : bool
+        Whether to print log-likelihoods to the terminal (default is False)
 
     Returns
     -------
+    composite_likelihood : float
+        Log-likelihood of the parameter combination
     """
 
     for p in range(len(world_map.parameters)):
