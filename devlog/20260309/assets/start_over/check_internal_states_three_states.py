@@ -199,7 +199,7 @@ def _calc_all_messages(
             messages[parent_of[c]+len(parents)] = _calc_branch_message(
                 current_pos,
                 branch_above[:,parent_of[c]],
-                forward_transition_matrices,
+                backward_transition_matrices,
                 direction="forward"
             )
     return messages
@@ -227,12 +227,14 @@ def estimate_node_positions(
         forward_transition_matrices
     )
 
+    node_locations = np.zeros((len(ids_asc_time), len(sample_locations_array[0])))
     for id in ids_asc_time:
         if id in sample_ids:
-            print(id, sample_locations_array[np.where(sample_ids==id)[0][0]])
+            node_locations[id] = sample_locations_array[np.where(sample_ids==id)[0][0]]
         else:
             combined = np.prod(np.concatenate((messages[[id+len(parents)]], messages[np.where(parents==id)[0]])), axis=0)
-            print(id, combined/np.sum(combined))
+            node_locations[id] = combined / sum(combined)
+    return node_locations
 
 
 
@@ -240,28 +242,31 @@ ids_asc_time = np.array([0, 1, 2, 3, 4])
 parents = np.array([3, 3, 4, 4, -1])
 branch_above = np.array([[1, 1, 2, 1, 0]])
 sample_locations_array = np.array([
-    [1, 0],
-    [0, 1],
-    [0, 1]
+    [1, 0, 0],
+    [0, 1, 0],
+    [0, 0, 1]
 ])
 sample_ids = np.array([0, 1, 2])
 
 transition_matrices = np.array([
     [
-        [-2, 2],
-        [1, -1]
+        [-3, 2, 1],
+        [1, -2, 1],
+        [1, 1, -2]
     ]
 ])
 
-#print(convert_to_opposite_rate_matrix(transition_matrices[-1]))
-
 
 #print(_calc_branch_message(
-#    3,
-#    np.array([0, 1]),
-#    branch_above,
+#    np.array([1, 0, 0]),
+#    branch_above[:,3],
 #    transition_matrices
 #))
+
+print(0.26373673*0.24542109*0.26373673*0.24991613 + 0.26373673*0.24542109*0.41952563*0.41509803 + 0.26373673*0.24542109*0.31673764*0.33498583)
+print(0.41952563*0.43784127*0.24542109*0.24991613 + 0.41952563*0.43784127*0.43784127*0.41509803 + 0.41952563*0.43784127*0.31673764*0.33498583)
+print(0.31673764*0.31673764*0.24542109*0.24991613 + 0.31673764*0.31673764*0.3880542*0.41509803 + 0.31673764*0.31673764*0.36652471*0.33498583)
+
 
 #like, messages = likelihood_of_tree(
 #    parents,
@@ -275,15 +280,15 @@ transition_matrices = np.array([
 
 
 
-print(0.36652471*0.31673764*0.36652471*0.33250708+0.36652471*0.31673764*0.63347529*0.66749292)
-print(0.63347529*0.68326236*0.31673764*0.33250708+0.63347529*0.68326236*0.68326236*0.66749292)
+#print(0.36652471*0.31673764*0.36652471*0.33250708+0.36652471*0.31673764*0.63347529*0.66749292)
+#print(0.63347529*0.68326236*0.31673764*0.33250708+0.63347529*0.68326236*0.68326236*0.66749292)
 
 
-estimate_node_positions(
+print(estimate_node_positions(
     parents,
     branch_above,
     ids_asc_time,
     sample_locations_array,
     sample_ids,
     transition_matrices
-)
+))

@@ -568,7 +568,7 @@ def _calc_branch_message_log(
     included_epochs = np.where(branch_above > 0)[0]
     P = np.eye(len(current_pos))
     for epoch in included_epochs:
-        bl_index = np.where(unique_branch_lengths[epoch]==branch_abov[epoch])[0][0]
+        bl_index = np.where(unique_branch_lengths[epoch]==branch_above[epoch])[0][0]
         P = np.dot(P, precomputed_transitions[epoch][bl_index])
     message = logsumexp_custom(current_pos + np.log(P).T, axis=1)
     return message
@@ -844,3 +844,168 @@ def run(
         if world_map.parameters[p] != "alpha":
             final[p] = np.exp(final[p])
     return final, -res.fun
+
+
+
+
+def _calc_current_pos(id, messages, parents):
+    """Calculates current node position as product of child messages
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    messages : np.array
+        Messages being passed in tree
+    parents : np.array
+        Parent IDs for each node
+    
+    Returns
+    -------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    """
+
+    return np.prod(messages[np.where(parents==id)[0]], axis=0)
+
+def _calc_branch_message(current_pos, branch_above, transition_matrices, direction="backward"):
+    """Calculates the message to be passed along a branch above specified node
+
+    Parameters
+    ----------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    branch_above : np.array
+        Branch lengths above each node split across epochs
+    transition_matrices : np.array
+        Rate matrices for each epoch
+
+    Returns
+    -------
+    message : np.array
+        Probability distribution for location of lineage given subtree below
+    """
+
+    included_epochs = np.where(branch_above > 0)[0]
+    P = np.eye(len(current_pos))
+    for epoch in included_epochs:
+        P = np.dot(P, linalg.expm(transition_matrices[epoch]*branch_above[epoch]))
+    if direction == "backward":
+        message = np.dot(current_pos, P)
+    else:
+        message = np.dot(P, current_pos)
+    return message
+
+def _calc_all_messages(
+        parents,
+        branch_above,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        transition_matrices
+    ):
+    """
+
+    Parameters
+    ----------
+    parents : np.array
+        Parent IDs for each node
+    branch_above : np.array
+        Branch lengths above each node split across epochs
+    ids_asc_time : np.array
+        Nodes IDs in time ascending order
+    sample_locations_array : np.array
+        Array
+    sample_ids : np.array
+        Defines order of sample node IDs for sample_locations_array
+    transition_matrices : np.array
+        Rate matrices for each epoch
+
+    Returns
+    -------
+    loglikelihood : float
+        Log-likelihood of tree
+    """
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.ones((len(parents)*2, num_demes), dtype="float64")
+    for id in ids_asc_time:
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+        else:
+            current_pos = _calc_current_pos(
+                id,
+                messages,
+                parents
+            )
+        current_pos = current_pos / np.sum(current_pos)
+        parent = parents[id]
+        if parent != -1:
+            messages[id] = _calc_branch_message(
+                current_pos,
+                branch_above[:,id],
+                transition_matrices,
+                direction="backward"
+            )
+    for id in ids_asc_time[::-1]:
+        parent_of = np.where(parents==id)[0]
+        for c in range(len(parent_of)):
+            alt_children = np.delete(parent_of, c)
+            current_pos = np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0)
+            current_pos = current_pos / np.sum(current_pos)
+            messages[parent_of[c]+len(parents)] = _calc_branch_message(
+                current_pos,
+                branch_above[:,parent_of[c]],
+                transition_matrices,
+                direction="forward"
+            )
+    return messages
+
+def estimate_node_positions(
+        parameters,
+        demes_path,
+        connections_path,
+        samples_path,
+        tree_path,
+        chop_time=None,
+        time_bins=None
+    ):
+    """Marginal scaled likelihoods of node positions
+    """
+
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, connections, samples)
+
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+
+    tree = tskit.load(tree_path)
+    if chop_time is not None:
+        decap = tree.decapitate(chop_time)
+        tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
+    if time_bins is not None:
+        tree = nx_bin_ts(tree, time_bins)
+    tree = tree.first()
+
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
+    transition_matrices = world_map.build_transition_matrices(parameters=parameters)
+
+    messages = _calc_all_messages(
+        parents,
+        branch_above,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        transition_matrices
+    )
+
+    node_locations = np.zeros((len(ids_asc_time), len(sample_locations_array[0])))
+    for id in ids_asc_time:
+        if id in sample_ids:
+            node_locations[id] = sample_locations_array[np.where(sample_ids==id)[0][0]]
+        else:
+            combined = np.prod(np.concatenate((messages[[id+len(parents)]], messages[np.where(parents==id)[0]])), axis=0)
+            node_locations[id] = combined / sum(combined)
+    return node_locations
