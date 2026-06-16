@@ -321,6 +321,7 @@ def create_random_grid_demes_file(side_length, number_of_deme_types=1, output_pa
 
 def create_arg_file(
         demes_path,
+        connections_path,
         samples_path,
         sequence_length,
         recombination_rate,
@@ -355,6 +356,7 @@ def create_arg_file(
     ploidy = 1
 
     demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
     samples = pd.read_csv(samples_path, sep="\t")
 
     if migration_rate is None and migration_rates is None:
@@ -366,7 +368,7 @@ def create_arg_file(
         transitions = list(combinations_with_replacement(deme_types, 2))
         migration_rates = {i:migration_rate for i in range(len(transitions))}
 
-    world_map = WorldMap(demes=demes, samples=samples)
+    world_map = WorldMap(demes=demes, connections=connections, samples=samples)
 
     demography = _set_up_msprime_demography(world_map=world_map, pop_size=pop_size, migration_rates=migration_rates)
     samples = []

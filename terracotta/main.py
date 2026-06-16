@@ -4,6 +4,7 @@ import matplotlib.tri as tri
 import random
 import numpy as np
 from scipy import linalg
+import scipy
 import matplotlib as mpl
 import networkx as nx
 import tskit
@@ -232,7 +233,10 @@ class WorldMap:
             for _,connection in self.connections.iterrows():
                 i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
                 i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
-                suit = (self.demes[f"suitability_{self.epochs[e]}"][i_1] / self.demes[f"suitability_{self.epochs[e]}"][i_0])**a
+                denom = self.demes[f"suitability_{self.epochs[e]}"][i_0]
+                if denom == 0:
+                    denom = 1e-99
+                suit = (self.demes[f"suitability_{self.epochs[e]}"][i_1] / denom)**a
                 mod = connection[f"migration_modifier_{self.epochs[e]}"]
                 if mod in self.parameters:
                     mod = parameters[self.parameters.index(mod)]
@@ -459,6 +463,50 @@ def _deconstruct_tree(tree, epochs, time_bins=None):
         else:
             time_bin_widths[node] = 1
     return parents, branch_above, time_bin_widths, ids_asc_time
+
+def deconstruct_trees(trees, epochs, time_bins=None):
+    """Converts list of `tskit.Tree`s into primitive elements that can be passed to numba
+
+    Parameters
+    ----------
+    trees : list
+        tskit.Tree objects
+    epochs : numpy.ndarray
+        Order timing of epoch starts from terracotta.WorldMap
+    time_bins : numpy.ndarray
+        Sequence of times to group node times into (default is `None`, ignored)
+
+    Returns
+    -------
+    pl : list
+        Arrays containing ID of parent for each node, one array per tree
+    bal : list
+        Arrays containing branch above length for each node, one array per tree
+    tbw : list
+        Arrays containaing time bin widths for each node, one array per tree
+    iat : list
+        Arrays of nodes IDs in time ascending order, one array per tree
+    unique_branch_lengths : list
+        List of lists containing unique branch lengths in each epoch
+    """
+    
+    pl = []
+    bal = []
+    tbw = []
+    iat = []
+    all_branch_lengths = [[] for e in epochs]
+    for tree in trees:
+        parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, epochs, time_bins=time_bins)
+        pl.append(parents)
+        bal.append(branch_above)
+        tbw.append(time_bin_widths)
+        iat.append(ids_asc_time)
+        for e in range(len(epochs)):
+            all_branch_lengths[e].extend(branch_above[e])
+    unique_branch_lengths = []
+    for e in range(len(epochs)):
+        unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
+    return pl, bal, tbw, iat, unique_branch_lengths
 
 def _deconstruct_trees(trees, epochs, time_bins=None):
     """Converts list of `tskit.Tree`s into primitive elements that can be passed to numba
@@ -1128,11 +1176,108 @@ def track_lineage_over_time(
 
 
 
-    node_locations = np.zeros((len(ids_asc_time), len(sample_locations_array[0])))
-    for id in ids_asc_time:
+
+
+
+def _calc_current_pos_no_precalc(id, messages, parents):
+    """Calculates current node position as product of child messages
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    messages : np.array
+        Messages being passed in tree
+    parents : np.array
+        Parent IDs for each node
+    
+    Returns
+    -------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    """
+
+    return np.prod(messages[np.where(parents==id)[0]], axis=0)
+
+def _calc_branch_message_no_precalc(current_pos, branch_above, transition_matrices, direction="backward"):
+    """Calculates the message to be passed along a branch above specified node
+
+    Parameters
+    ----------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    branch_above : np.array
+        Branch lengths above each node split across epochs
+    transition_matrices : np.array
+        Rate matrices for each epoch
+
+    Returns
+    -------
+    message : np.array
+        Probability distribution for location of lineage given subtree below
+    """
+
+    included_epochs = np.where(branch_above > 0)[0]
+    P = np.eye(len(current_pos))
+    for epoch in included_epochs:
+        P = np.dot(P, linalg.expm(transition_matrices[epoch]*branch_above[epoch]))
+    if direction == "backward":
+        message = np.dot(current_pos, P)
+    else:
+        message = np.dot(P, current_pos)
+    return message
+
+def run_no_precalc(
+        demes_path,
+        connections_path,
+        samples_path,
+        trees_dir_path,
+        chop_time=None,
+        output_file=None,
+        verbose=False
+    ):
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, connections, samples)
+
+    transition_matrices = world_map.build_transition_matrices(parameters=parameters)
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts)
+        if chop_time is not None:
+            decap = tree.decapitate(chop_time)
+            tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
+        trees.append(tree.first())
+
+    tree = trees[0]
+
+    parents, branch_above, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, world_map.epochs)
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.zeros((len(parents), num_demes), dtype="float64")
+    loglikelihood = 0
+    for id in ids_asc_time: 
         if id in sample_ids:
-            node_locations[id] = sample_locations_array[np.where(sample_ids==id)[0][0]]
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
         else:
-            combined = np.prod(np.concatenate((messages[[id+len(parents)]], messages[np.where(parents==id)[0]])), axis=0)
-            node_locations[id] = combined / sum(combined)
-    return node_locations
+            current_pos = _calc_current_pos_log(
+                id,
+                messages,
+                parents
+            )
+        parent = parents[id]
+        if parent != -1:
+            messages[id] = _calc_branch_message_log(
+                current_pos,
+                branch_above[:,id],
+                unique_branch_lengths,
+                precomputed_transitions
+            )
+        else:   # collect roots here
+            loglikelihood += logsumexp_custom(current_pos, axis=0)
+    print(loglikelihood)
+

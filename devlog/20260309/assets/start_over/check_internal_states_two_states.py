@@ -255,7 +255,6 @@ transition_matrices = np.array([
 
 print(convert_to_opposite_rate_matrix(transition_matrices[-1]))
 
-exit()
 
 
 #print(_calc_branch_message(
