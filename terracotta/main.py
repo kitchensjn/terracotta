@@ -9,7 +9,7 @@ from .world_map import WorldMap
 from .likelihood import calc_composite_likelihood_for_parameters
 
 
-def _deconstruct_tree(tree, epochs):
+def deconstruct_tree(tree, epochs):
     """Converts a `tskit.Tree` into primitive elements that can be passed to numba
 
     Parameters
@@ -33,7 +33,6 @@ def _deconstruct_tree(tree, epochs):
 
     num_nodes = len(tree.postorder())
     parents = np.full(num_nodes, -1, dtype="int64")
-    node_epoch = np.full(num_nodes, -1, dtype="int64")
     branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
     time_bin_widths = np.full(num_nodes, -1, dtype="int64")
     ids_asc_time = np.full(num_nodes, -1, dtype="int64")
@@ -41,7 +40,6 @@ def _deconstruct_tree(tree, epochs):
         node_time = tree.time(node)
         parent = tree.parent(node)
         starting_epoch = np.digitize(node_time, epochs)-1
-        node_epoch[node] = starting_epoch
         if parent != -1:
             parent_time = tree.time(parent)
             ending_epoch = np.digitize(parent_time, epochs)-1
@@ -55,7 +53,7 @@ def _deconstruct_tree(tree, epochs):
         ids_asc_time[i] = node
         parents[node] = parent
         time_bin_widths[node] = 1
-    return parents, branch_above, node_epoch, time_bin_widths, ids_asc_time
+    return parents, branch_above, time_bin_widths, ids_asc_time
 
 def deconstruct_trees(trees, epochs):
     """Converts list of `tskit.Tree`s into primitive elements that can be passed to numba
@@ -73,8 +71,6 @@ def deconstruct_trees(trees, epochs):
         Arrays containing ID of parent for each node, one array per tree
     bal : list
         Arrays containing branch above length for each node, one array per tree
-    nel : list
-        Arrays containing the epochs of each node, one array per tree
     tbw : list
         Arrays containaing time bin widths for each node, one array per tree
     iat : list
@@ -85,15 +81,13 @@ def deconstruct_trees(trees, epochs):
     
     pl = []
     bal = []
-    nel = []
     tbw = []
     iat = []
     all_branch_lengths = [[] for e in epochs]
     for tree in trees:
-        parents, branch_above, node_epoch, time_bin_widths, ids_asc_time = _deconstruct_tree(tree, epochs)
+        parents, branch_above, time_bin_widths, ids_asc_time = deconstruct_tree(tree, epochs)
         pl.append(parents)
         bal.append(branch_above)
-        nel.append(node_epoch)
         tbw.append(time_bin_widths)
         iat.append(ids_asc_time)
         for e in range(len(epochs)):
@@ -101,14 +95,13 @@ def deconstruct_trees(trees, epochs):
     unique_branch_lengths = []
     for e in range(len(epochs)):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
-    return pl, bal, nel, tbw, iat, unique_branch_lengths
+    return pl, bal, tbw, iat, unique_branch_lengths
 
 def _run_from_minimize(
         parameters,
         world_map,
         parents,
         branch_above,
-        node_epoch,
         unique_branch_lengths,
         ids_asc_time,
         sample_locations_array_log,
@@ -128,8 +121,6 @@ def _run_from_minimize(
         Arrays containing ID of parent for each node, one array per tree
     branch_above : list
         Arrays containing branch above length (split across epochs) for each node, one array per tree
-    node_epoch : list
-        Arrays containing the epochs of each node, one array per tree
     unique_branch_lengths : list
         List of lists containing unique branch lengths in each epoch
     ids_asc_time : list
@@ -155,7 +146,6 @@ def _run_from_minimize(
         world_map,
         parents,
         branch_above,
-        node_epoch,
         unique_branch_lengths,
         ids_asc_time,
         sample_locations_array_log,
@@ -226,7 +216,7 @@ def run(
     sample_locations_array = np.maximum(sample_locations_array, 1e-99)
     sample_locations_array_log = np.log(sample_locations_array)
 
-    parents, branch_above, node_epoch, time_bin_widths, ids_asc_time, unique_branch_lengths = deconstruct_trees(trees=trees, epochs=world_map.epochs)
+    parents, branch_above, time_bin_widths, ids_asc_time, unique_branch_lengths = deconstruct_trees(trees=trees, epochs=world_map.epochs)
 
     start = []
     bounds = []
@@ -246,7 +236,6 @@ def run(
             world_map,
             parents,
             branch_above,
-            node_epoch,
             unique_branch_lengths,
             ids_asc_time,
             sample_locations_array_log,

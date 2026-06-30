@@ -5,26 +5,7 @@ from scipy.linalg import expm, eig
 from numba import njit, prange
 
 
-def plot_messages(messages, save_to=None):
-    """Plots the location probability distributions from each child and at the root
-
-    Parameters
-    ----------
-    messages : np.array
-        Messages being passed in tree. Shape is #nodes x #demes.
-    save_to : str
-        Path to output file. Default is None, ignored.
-    """
-
-    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(10, 3))
-    ax[0].bar(range(len(messages[0])), messages[0], width=1, color="#E95E0D", alpha=0.5)
-    ax[0].bar(range(len(messages[1])), messages[1], width=1, alpha=0.5)
-    ax[1].bar(range(len(messages[2])), messages[2], width=1, color="#000000")
-    if save_to is not None:
-        plt.savefig(save_to)
-    plt.show()
-
-def _calc_current_pos(id, messages, parents, coal_rates):
+def _calc_current_pos(id, messages, parents):
     """Calculates current node position as product of child messages
 
     Parameters
@@ -35,8 +16,6 @@ def _calc_current_pos(id, messages, parents, coal_rates):
         Messages being passed in tree. Shape is #nodes x #demes.
     parents : np.array
         Parent IDs for each node. Length is #nodes.
-    coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in the node's corresponding epoch
     
     Returns
     -------
@@ -45,7 +24,6 @@ def _calc_current_pos(id, messages, parents, coal_rates):
     """
 
     current_pos = np.prod(messages[np.where(parents==id)[0]], axis=0)
-    #new = np.multiply(coal_rates, np.prod(messages[np.where(parents==id)[0]], axis=0)).ravel()
     return current_pos
 
 def _calc_branch_message(
@@ -87,13 +65,11 @@ def _calc_branch_message(
 def likelihood_of_tree(
         parents,
         branch_above,
-        node_epoch,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
         unique_branch_lengths,
-        precalculated_transitions,
-        coal_rates
+        precalculated_transitions
     ):
     """
     Parameters
@@ -102,8 +78,6 @@ def likelihood_of_tree(
         Parent IDs for each node. Length is #nodes.
     branch_above : np.array
         Branch lengths above each node split across epochs. Shape is #epochs x #nodes.
-    node_epoch : np.array
-        Epochs of each node. Length is #nodes.
     ids_asc_time : np.array
         IDs of nodes in tree in time ascending order. Length is #nodes.
     sample_locations_array : np.array
@@ -114,8 +88,6 @@ def likelihood_of_tree(
         Arrays containing unique branch lengths in each epoch.
     precalculated_transitions : list
         Arrays of transition probabilities corresponding with the unique_branch_lengths.
-    coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in each epoch
 
     Returns
     -------
@@ -136,8 +108,7 @@ def likelihood_of_tree(
             current_pos = _calc_current_pos(
                 id,
                 messages,
-                parents,
-                coal_rates[node_epoch[id]]
+                parents
             )
 
         # Also rescale so that underflow is not a problem and track scaler
@@ -152,14 +123,11 @@ def likelihood_of_tree(
             unique_branch_lengths,
             precalculated_transitions
         )
-        
-        #if parents[id] == -1:
-        #    plt.bar(range(len(messages[0])), messages[id], width=1, color="#E95E0D", alpha=1)
-        #    plt.show()
+
     return loglikelihood
 
 @njit()
-def _calc_current_pos_log(id, messages, parents, coal_rates):
+def _calc_current_pos_log(id, messages, parents):
     """Calculates current node position as product of child messages
 
     Parameters
@@ -170,8 +138,6 @@ def _calc_current_pos_log(id, messages, parents, coal_rates):
         Messages being passed in tree. Shape is #nodes x #demes.
     parents : np.array
         Parent IDs for each node. Length is #nodes.
-    coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in the node's corresponding epoch, converted to log space
     
     Returns
     -------
@@ -180,7 +146,6 @@ def _calc_current_pos_log(id, messages, parents, coal_rates):
     """
 
     current_pos = np.sum(messages[np.where(parents==id)[0]], axis=0)[np.newaxis, :]
-    #new = coal_rates + np.sum(messages[np.where(parents==id)[0]], axis=0)
     return current_pos
 
 @njit()
@@ -236,13 +201,11 @@ def _calc_branch_message_log(
 def likelihood_of_tree_log(
         parents,
         branch_above,
-        node_epoch,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
         unique_branch_lengths,
-        precalculated_transitions,
-        coal_rates
+        precalculated_transitions
     ):
     """Computes log-likelihood of tree in log-space to avoid underflow
 
@@ -252,8 +215,6 @@ def likelihood_of_tree_log(
         Parent IDs for each node. Length is #nodes.
     branch_above : np.array
         Branch lengths above each node split across epochs. Shape is #epochs x #nodes.
-    node_epoch : np.array
-        Epochs of each node. Length is #nodes.
     ids_asc_time : np.array
         IDs of nodes in tree in time ascending order. Length is #nodes.
     sample_locations_array : np.array
@@ -264,8 +225,6 @@ def likelihood_of_tree_log(
         Arrays containing unique branch lengths in each epoch
     precalculated_transitions : list
         Arrays of transition probabilities corresponding with the unique_branch_lengths, converted to log space
-    coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in each epoch, converted to log space. Shape is #epochs x #demes.
 
     Returns
     -------
@@ -283,8 +242,7 @@ def likelihood_of_tree_log(
             current_pos = _calc_current_pos_log(
                 id,
                 messages,
-                parents,
-                coal_rates[node_epoch[id]]
+                parents
             )
         messages[id] = _calc_branch_message_log(
             id,
@@ -301,13 +259,11 @@ def likelihood_of_tree_log(
 def _process_trees(
         parents,
         branch_above,
-        node_epoch,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
         unique_branch_lengths,
-        precalculated_transitions,
-        coal_rates
+        precalculated_transitions
     ):
     """
     Parameters
@@ -316,8 +272,6 @@ def _process_trees(
         Arrays containing ID of parent for each node, one array per tree
     branch_above : list
         Arrays containing branch above length (split across epochs) for each node, one array per tree
-    node_epoch : list
-        Arrays containing the epochs of each node, one array per tree
     ids_asc_time : List
         Arrays of nodes IDs in time ascending order, one array per tree
     sample_locations_array : numpy.ndarray
@@ -328,8 +282,6 @@ def _process_trees(
         Arrays containing unique branch lengths in each epoch
     precalculated_transitions : list
         Arrays of transition probabilities corresponding with the unique_branch_lengths, converted to log space
-    coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in each epoch, converted to log space
     
     Returns
     -------
@@ -339,57 +291,20 @@ def _process_trees(
 
     composite_likelihood = 0
     for i in prange(len(branch_above)):
-        #like = likelihood_of_tree(
-        #    parents=parents[i],
-        #    branch_above=branch_above[i],
-        #    ids_asc_time=ids_asc_time[i],
-        #    sample_locations_array=np.exp(sample_locations_array),
-        #    sample_ids=sample_ids,
-        #    unique_branch_lengths=unique_branch_lengths,
-        #    precalculated_transitions=np.exp(precalculated_transitions),
-        #    coal_rates=np.exp(coal_rates)
-        #)
         like = likelihood_of_tree_log(
             parents=parents[i],
             branch_above=branch_above[i],
-            node_epoch=node_epoch[i],
             ids_asc_time=ids_asc_time[i],
             sample_locations_array=sample_locations_array,
             sample_ids=sample_ids,
             unique_branch_lengths=unique_branch_lengths,
-            precalculated_transitions=precalculated_transitions,
-            coal_rates=coal_rates
+            precalculated_transitions=precalculated_transitions
         )
         composite_likelihood += like
     return composite_likelihood
 
-def eig_decompose(Q: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Claude. Eigendecompose Q once. Returns (V, V_inv, eigenvalues)."""
-    eigvals, V = eig(Q)
-    eigvals = eigvals.real
-    V = V.real
-    V_inv = np.linalg.inv(V)
-    return V, V_inv, eigvals
-
-def batched_transition_matrices(V: np.ndarray, V_inv: np.ndarray, eigvals: np.ndarray,
-                                branch_lengths: np.ndarray) -> np.ndarray:
-    """
-    Claude. Compute P(t) = V @ diag(exp(eigvals * t)) @ V_inv for every t in
-    branch_lengths simultaneously (fully vectorized, no per-branch expm).
-
-    Returns array of shape (len(branch_lengths), n_states, n_states).
-    """
-    # exp(eigvals * t): shape (B, n_states)
-    exp_dt = np.exp(np.outer(branch_lengths, eigvals))
-    # P = V @ diag(exp_dt) @ V_inv  for each branch, vectorized with einsum
-    # (B,k) , (n,k) , (k,n) -> (B,n,n)
-    P = np.einsum('ik,jk,kl->ijl', exp_dt, V, V_inv)
-    return P.real
-
 def precalculate_transitions(branch_lengths, transition_matrices, method="MP"):
     """Calculates the transition probabilities between demes for each branch length
-
-    DO NOT USE EVD METHOD. Currently unstable!
 
     Parameters
     ----------
@@ -407,12 +322,7 @@ def precalculate_transitions(branch_lengths, transition_matrices, method="MP"):
     """
 
     precalculated_transitions = []
-    if method == "EVD":
-        for e in range(len(branch_lengths)):
-            V, V_inv, eigvals = eig_decompose(transition_matrices[e])
-            transitions = batched_transition_matrices(V, V_inv, eigvals, branch_lengths[e])
-            precalculated_transitions.append(transitions)
-    elif method == "MP":
+    if method == "MP":
         for e in range(len(branch_lengths)):
             num_demes = transition_matrices[e].shape[0]
             transitions = np.zeros((len(branch_lengths[e]), num_demes, num_demes), dtype="float64")
@@ -445,7 +355,6 @@ def calc_composite_likelihood_for_parameters(
         world_map,
         parents,
         branch_above,
-        node_epoch,
         unique_branch_lengths,
         ids_asc_time,
         sample_locations_array,
@@ -464,8 +373,6 @@ def calc_composite_likelihood_for_parameters(
         Arrays containing ID of parent for each node, one array per tree
     branch_above : list
         Arrays containing branch above length (split across epochs) for each node, one array per tree
-    node_epoch : list
-        Arrays containing the epochs of each node, one array per tree
     unique_branch_lengths : list
         List of lists containing unique branch lengths in each epoch
     ids_asc_time : list
@@ -496,28 +403,17 @@ def calc_composite_likelihood_for_parameters(
 
     transition_matrices = world_map.build_transition_matrices(parameters=parameters)
     pop_sizes = world_map.suitabilities ** alpha
-    coal_rates_log = np.log(1/(pop_sizes))
     precalculated_transitions = precalculate_transitions(unique_branch_lengths, transition_matrices, method="MP")
     precalculated_transitions_log = np.log(np.maximum(precalculated_transitions, 1e-99))
-
-    #precalculated_transitions_evd = precalculate_transitions(unique_branch_lengths, transition_matrices, method="EVD")
-    #precalculated_transitions_mp = precalculate_transitions(unique_branch_lengths, transition_matrices, method="MP")
-    #for t in range(1):#len(precalculated_transitions_mp[0])):
-    #    print(precalculated_transitions_mp[0][t])
-    #    print(precalculated_transitions_evd[0][t])
-    #    print(np.max(precalculated_transitions_mp[0][t] / precalculated_transitions_evd[0][t]))
-    #exit()
     
     composite_likelihood = _process_trees(
         parents=parents,
         branch_above=branch_above,
-        node_epoch=node_epoch,
         ids_asc_time=ids_asc_time,
         sample_locations_array=sample_locations_array,
         sample_ids=sample_ids,
         unique_branch_lengths=unique_branch_lengths,
-        precalculated_transitions=precalculated_transitions_log,
-        coal_rates=coal_rates_log
+        precalculated_transitions=precalculated_transitions_log
     )
 
     if output_file is not None:
@@ -589,6 +485,8 @@ if __name__ == "__main__":
         unique_branch_lengths.append(np.unique(branch_above[e]))
 
     precalculated_transitions = precalculate_transitions(unique_branch_lengths, transition_matrices)
+    precalculated_transitions = np.maximum(1e-99, precalculated_transitions)
+    precalculated_transitions_log = np.log(precalculated_transitions)
 
     like = likelihood_of_tree(
         parents,
@@ -597,8 +495,7 @@ if __name__ == "__main__":
         sample_locations_array,
         sample_ids,
         unique_branch_lengths,
-        precalculated_transitions,
-        coal_rate
+        precalculated_transitions
     )
 
     print(like)
@@ -610,8 +507,7 @@ if __name__ == "__main__":
         sample_locations_array_log,
         sample_ids,
         unique_branch_lengths,
-        precalculated_transitions,
-        coal_rate_log
+        precalculated_transitions_log
     )
 
     print(like)
