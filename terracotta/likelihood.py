@@ -404,7 +404,9 @@ def calc_composite_likelihood_for_parameters(
     transition_matrices = world_map.build_transition_matrices(parameters=parameters)
     pop_sizes = world_map.suitabilities ** alpha
     precalculated_transitions = precalculate_transitions(unique_branch_lengths, transition_matrices, method="MP")
-    precalculated_transitions_log = np.log(np.maximum(precalculated_transitions, 1e-99))
+    precalculated_transitions_log = []
+    for epoch_transitions in precalculated_transitions:
+        precalculated_transitions_log.append(np.log(np.maximum(epoch_transitions, 1e-99)))
     
     composite_likelihood = _process_trees(
         parents=parents,

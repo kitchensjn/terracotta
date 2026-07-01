@@ -12,73 +12,97 @@ conda env create -f environment.yml
 conda activate terracotta
 ```
 
-### Quickstart
+### Tutorial - Example dataset
 
-Within the [example_dataset/](https://github.com/kitchensjn/terracotta/tree/main/example_dataset) folder, you can find an example `demes.tsv`, `samples.tsv`, and `trees/` folder which are the necessary inputs for this method. The following code can also be found in [example_dataset/run.py](https://github.com/kitchensjn/terracotta/tree/main/example_dataset/run.py).
+Within the [example_dataset/](https://github.com/kitchensjn/terracotta/tree/main/example_dataset) folder, you can find a `dataset` folder with `demes.tsv`, `connections.tsv`, `samples.tsv`, and `trees/` folder. These are the four necessary inputs for `terracotta`. This example dataset models an expansion out of a glacial refugium 1000 generations in the past, as shown in the below figure. The trees were simulated with `msprime` using a demographic model built from the world map files.
 
-#### Loading the inputs
+![World map for expansion from glacial refugium, including habitat suitability over time](example_dataset/figures/world_map.png)
 
-```
-import pandas as pd
-import sys
-sys.path.append("..")   # if you are running from `example_dataset/`, otherwise path to `terracotta/`
-import terracotta as tct
-import tskit
-from glob import glob
+#### Input file structure
 
-demes = pd.read_csv("demes.tsv", sep="\t")
-samples = pd.read_csv("samples.tsv", sep="\t")
-world_map = tct.WorldMap(demes, samples)
-trees = [tct.nx_bin_ts(tskit.load(ts).simplify(), [0]+[10**i for i in range(1,10)]).first() for ts in glob(f"trees/*")]
-```
+##### demes.tsv
 
-`trees/` is a preprocessed directory of `.trees` files in the `tskit` format. These files only contain a single tree each. By loading it in this way, you've created a list of `tskit.Trees` with times discretized.
+This is a tab separated file with four mandatory columns:
+- `id`: integer ID of the deme
+- `xcoord`: x-coordinate of deme for plotting
+- `ycoord`: y-coordinate of deme for plotting
+- `suitability`: either a float or a string with the format `time:suitability,time:suitability,...` if the suitability changes through time
 
-#### View the world map
+##### connections.tsv
 
-```
-world_map.draw(
-    figsize=(15,15),
-    color_demes=True,
-    show_samples=True
-)
-```
+This is a tab separated file with four mandatory columns:
+- `id`: integer ID of the connection
+- `deme_0`: ID for the source deme of the edge (matching `demes.tsv`)
+- `deme_1`: ID for the target deme of the edge (matching `demes.tsv`)
+- `migration_modifier`: either a float (if known), string (if unknown), or a string with the format `time:modifier,time:modifier,...` if the modifier changes through time 
 
-![Example World Map](example_dataset/readme_figures/world_map.png)
+##### samples.tsv
 
-Here, demes have been colored according to their type set by `demes.tsv`. Orange circles mark demes with samples, where the size of the circle is proportional to the number of samples found in that deme.
+This is a tab separated file with two mandatory columns:
+- `id`: integer ID of the sample as it appears in the trees
+- `deme`: ID of the deme where the sample was found
+
+##### trees/
+
+This folder contains all of the gene trees stored as `tskit` tree files, each with only one tree in it.
+
 
 #### Estimate the most likely migration surface
 
 ```
-result, log_likelihood = tct.run(
-    demes_path="demes.tsv",
-    samples_path="samples.tsv",
-    trees_dir_path="trees",
-    asymmetric=True,
-    output_file="results.txt"
+import terracotta as tct
+
+result, loglikelihood = tct.run(
+    demes_path="dataset/demes.tsv",
+    connections_path="dataset/connections.tsv",
+    samples_path="dataset/samples.tsv",
+    trees_dir_path="dataset/trees",
+    output_file="output.tsv"
 )
 ```
 
-`terracotta` uses a global optimization algorithm (SHGO) to locate the most likely migration surface given your set deme types.
+`terracotta.run()` estimates the most likely migration surface using the `Nelder-Mead` hill-climbing algorithm. Here, it estimates two unknown parameters: `coefficient` (the default migration rate) and `alpha` (the exponent of the suitability ratio). Migration rate modifier variables will be automatically included in this search if present in `connections.tsv`.
+
+
+#### Loading the world map
+
+```
+import pandas as pd
+import terracotta as tct
+
+demes = pd.read_csv("demes.tsv", sep="\t")
+connections = pd.read_csv("connections.tsv", sep="\t")
+samples = pd.read_csv("samples.tsv", sep="\t")
+world_map = tct.WorldMap(demes, connections, samples)
+```
 
 #### Tracking a lineage over time
 
-To track a lineage over time you need to estimate the location of the lineage at specified time points within the tree.
+To track a lineage over time you need to estimate the location of the lineage at specified time points within a tree.
 
 ```
-locations = tct.track_lineage_in_tree(
-    node=0,
-    times=range(0,100,10),
-    tree=trees[0],
+import tskit
+from glob import glob
+
+trees = [path for path in glob("dataset/trees/*")]
+
+sample = 0
+times = range(0, 100, 10)
+tree = trees[0]
+
+positions = tct.track_lineage_over_time(
+    sample=sample,
+    times=times,
+    tree=tree,
     world_map=world_map,
-    migration_rates=result
+    parameters=result
 )
 
-for i,time in enumerate(range(0, 100, 10)):
-    world_map.draw(figsize=(5,5), location_vector=locations[i], title=f"{time} generations ago")
+for position in positions:
+    fig, axs = plt.subplots()
+    axs.scatter(world_map.demes["xcoord"], world_map.demes["ycoord"], marker="H", s=400, c=position)
+    axs.set_aspect("equal")
+    axs.margins(0.065)
+    axs.axis("off")
+    plt.show()
 ```
-
-### Map Builder
-
-Within the [map_builder/](https://github.com/kitchensjn/terracotta/tree/main/map_builder) folder, there are two D3.js based tools for creating `demes.tsv` and `samples.tsv`. These can be useful for generating test cases, such as changing the type of demes interactively, though are not intended to replace more powerful GIS-based workflows. You will need to access these tools through a Live Server. See `tct.create_demes_file_from_world_builder()` and `tct.create_samples_file_from_world_builder()` for information about how to create your input files with these tool.
