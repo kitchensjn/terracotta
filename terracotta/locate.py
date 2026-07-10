@@ -42,10 +42,12 @@ def _calc_branch_message(
 def _calc_all_messages(
         parents,
         branch_above,
+        node_epoch,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices
+        transition_matrices,
+        coal_rates
     ):
 
     num_demes = len(sample_locations_array[0])
@@ -56,7 +58,8 @@ def _calc_all_messages(
         if id in sample_ids:
             current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
         else:
-            current_pos = np.prod(messages[np.where(parents==id)[0]], axis=0)
+            #current_pos = np.prod(messages[np.where(parents==id)[0]], axis=0)
+            current_pos = np.multiply(coal_rates[node_epoch[id]], np.prod(messages[np.where(parents==id)[0]], axis=0))
 
         current_pos = current_pos / np.sum(current_pos)
         
@@ -66,12 +69,17 @@ def _calc_all_messages(
             transition_matrices,
             direction="backward"
         )
+
+    for message in messages:
+        print(message)
+    exit()
     
     for id in ids_asc_time[::-1]:
         parent_of = np.where(parents==id)[0]
         for c in range(len(parent_of)):
             alt_children = np.delete(parent_of, c)
-            current_pos = np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0)
+            
+            current_pos = np.multiply(coal_rates[node_epoch[id]], np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0))
 
             current_pos = current_pos / np.sum(current_pos)
             
@@ -147,19 +155,25 @@ def track_lineage_over_time(
         alpha = 1
 
     sample_locations_array, sample_ids = world_map.build_sample_locations_array()
-    parents, branch_above, time_bin_widths, ids_asc_time = deconstruct_tree(tree, world_map.epochs)
+    parents, branch_above, node_epoch, time_bin_widths, ids_asc_time = deconstruct_tree(tree, world_map.epochs)
     
     transition_matrices = world_map.build_transition_matrices(parameters=parameters)
-    pop_sizes = world_map.suitabilities ** alpha
+    pop_sizes = np.maximum(world_map.suitabilities ** alpha, 1e-99)
+    coal_rates = 1/(pop_sizes)
 
     messages = _calc_all_messages(
         parents,
         branch_above,
+        node_epoch,
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices
+        transition_matrices,
+        coal_rates
     )
+
+    print(messages)
+    exit()
 
     positions = np.zeros((len(pc_combos), len(world_map.demes)))
     for element, node_combo in enumerate(pc_combos):
