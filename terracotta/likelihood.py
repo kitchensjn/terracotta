@@ -17,7 +17,7 @@ def _calc_current_pos(id, messages, parents, coal_rates):
     parents : np.array
         Parent IDs for each node. Length is #nodes.
     coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in the node's corresponding epoch
+        Recipricol of suitability values for each deme in the node's corresponding epoch
     
     Returns
     -------
@@ -93,7 +93,7 @@ def likelihood_of_tree(
     precalculated_transitions : list
         Arrays of transition probabilities corresponding with the unique_branch_lengths.
     coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in each epoch
+        Recipricol of suitability values for each deme in each epoch
 
     Returns
     -------
@@ -146,7 +146,7 @@ def _calc_current_pos_log(id, messages, parents, coal_rates):
     parents : np.array
         Parent IDs for each node. Length is #nodes.
     coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in the node's corresponding epoch, converted to log space
+        Recipricol of suitability values for each deme in the node's corresponding epoch, converted to log space
     
     Returns
     -------
@@ -240,7 +240,7 @@ def likelihood_of_tree_log(
     precalculated_transitions : list
         Arrays of transition probabilities corresponding with the unique_branch_lengths, converted to log space
     coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in each epoch, converted to log space. Shape is #epochs x #demes.
+        Recipricol of suitability values for each deme in each epoch, converted to log space. Shape is #epochs x #demes.
 
     Returns
     -------
@@ -304,7 +304,7 @@ def _process_trees(
     precalculated_transitions : list
         Arrays of transition probabilities corresponding with the unique_branch_lengths, converted to log space
     coal_rates : numpy.ndarray
-        Recipricol of suitability^alpha values for each deme in each epoch, converted to log space
+        Recipricol of suitability values for each deme in each epoch, converted to log space
     
     Returns
     -------
@@ -420,13 +420,8 @@ def calc_composite_likelihood_for_parameters(
         Log-likelihood of the parameter combination
     """
 
-    if "alpha" in world_map.parameters:
-        alpha = parameters[world_map.parameters.index("alpha")]
-    else:
-        alpha = 1
-
     transition_matrices = world_map.build_transition_matrices(parameters=parameters)
-    pop_sizes = np.maximum(world_map.suitabilities ** alpha, 1e-99)
+    pop_sizes = np.maximum(world_map.suitabilities, 1e-99)
     coal_rates_log = np.log(1 / pop_sizes)
     precalculated_transitions = precalculate_transitions(unique_branch_lengths, transition_matrices, method="MP")
     precalculated_transitions_log = [np.log(np.maximum(epoch_transitions, 1e-99)) for epoch_transitions in precalculated_transitions]

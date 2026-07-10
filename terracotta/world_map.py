@@ -97,8 +97,6 @@ class WorldMap:
         self.epochs = np.sort(epochs)
 
         self.suitabilities = self._build_suitability_array()
-        if len(np.unique(self.suitabilities)) > 1:
-            self.parameters.append("alpha")
 
         self.connection_modifiers = self._build_connection_modifiers_array()
         modifiers = np.unique(self.connection_modifiers)
@@ -203,12 +201,7 @@ class WorldMap:
             m = parameters[self.parameters.index("coefficient")]
         else:
             m = 1
-        
-        if "alpha" in self.parameters:
-            a = parameters[self.parameters.index("alpha")]
-        else:
-            a = 1
-
+    
         transition_matrix = np.zeros((len(self.epochs), len(self.demes),len(self.demes)))
         for e in range(len(self.epochs)):
             for f,connection in self.connections.iterrows():
@@ -217,7 +210,7 @@ class WorldMap:
                 denom = self.suitabilities[e][i_0]
                 if denom == 0:
                     denom = 1e-99
-                suit = (self.suitabilities[e][i_1] / denom) ** a
+                suit = (self.suitabilities[e][i_1] / denom)
                 mod = self.connection_modifiers[e][f]
                 if mod in self.parameters:
                     mod = parameters[self.parameters.index(mod)]
