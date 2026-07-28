@@ -151,7 +151,8 @@ class WorldMap:
             Deme types ordered by the demes dataframe
         """
 
-        return pd.Series([self.get_deme_suitability_at_time(id, time) for id in self.demes["id"]])
+        suitabilities_at_time = pd.Series([self.get_deme_suitability_at_time(id, time) for id in self.demes["id"]])
+        return suitabilities_at_time
 
     def get_connection_migration_modifier_at_time(self, id, time):
         """Extracts the migration modifier for a connection at time
@@ -180,6 +181,26 @@ class WorldMap:
     def get_all_connection_migration_modifiers_at_time(self, time):
         return pd.Series([self.get_connection_migration_modifier_at_time(id, time) for id in self.connections["id"]])
 
+    def _calculate_migration_rate(self, deme_0, deme_1, parameters):
+        """Migration rate is default rate * suit(deme_1)/suit(deme_1) * modifier"""
+
+        if "coefficient" in self.parameters:
+            m = parameters[self.parameters.index("coefficient")]
+        else:
+            m = 1
+
+        denom = self.suitabilities[e][deme_0]
+        if denom == 0:
+            denom = 1e-99
+        suit = (self.suitabilities[e][deme_1] / denom)
+        mod = self.connection_modifiers[e][f]
+        if mod in self.parameters:
+            mod = parameters[self.parameters.index(mod)]
+        else:
+            mod = float(mod)
+        rate = (m * suit) * mod
+        return rate
+
     def build_transition_matrices(self, parameters):
         """Builds the transition matrix based on the world map and migration rate parameters
 
@@ -196,27 +217,16 @@ class WorldMap:
 
         if len(parameters) != len(self.parameters):
             raise RuntimeError("Length of `parameters` does not equal WorldMap.parameters. You must provide values for all parameters, in order.")
-
-        if "coefficient" in self.parameters:
-            m = parameters[self.parameters.index("coefficient")]
-        else:
-            m = 1
     
         transition_matrix = np.zeros((len(self.epochs), len(self.demes),len(self.demes)))
         for e in range(len(self.epochs)):
             for f,connection in self.connections.iterrows():
+                
                 i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
-                i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]
-                denom = self.suitabilities[e][i_0]
-                if denom == 0:
-                    denom = 1e-99
-                suit = (self.suitabilities[e][i_1] / denom)
-                mod = self.connection_modifiers[e][f]
-                if mod in self.parameters:
-                    mod = parameters[self.parameters.index(mod)]
-                else:
-                    mod = float(mod)
-                transition_matrix[e, i_1, i_0] = (m * suit) * mod
+                i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]                
+                transition_matrix[e, i_1, i_0] = _calculate_migration_rate(deme_0=i_0, deme_1=i_1, parameters=parameters)
+                transition_matrix[e, i_0, i_1] = _calculate_migration_rate(deme_0=i_1, deme_1=i_0, parameters=parameters)
+
             diag = -np.sum(transition_matrix[e], axis=0)
             np.fill_diagonal(transition_matrix[e], diag)
         return transition_matrix
@@ -242,6 +252,10 @@ class WorldMap:
 
     def _build_suitability_array(self):
         """Builds the suitability array
+
+        Returns
+        -------
+        suitabilities :
         """
 
         suitabilities = np.zeros((len(self.epochs), len(self.demes)), dtype="float")
