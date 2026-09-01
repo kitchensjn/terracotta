@@ -1,7 +1,27 @@
 import numpy as np
+from scipy import linalg
 from .main import deconstruct_tree
-from scipy.linalg import expm
 
+
+def _calc_current_pos(id, messages, parents, coal_rate):
+    """Calculates current node position as product of child messages
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    messages : np.array
+        Messages being passed in tree
+    parents : np.array
+        Parent IDs for each node
+    
+    Returns
+    -------
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    """
+
+    return np.multiply(coal_rate, np.prod(messages[np.where(parents==id)[0]], axis=0))
 
 def _calc_branch_message(
         current_pos,
@@ -31,66 +51,12 @@ def _calc_branch_message(
 
     included_epochs = np.where(branch_above > 0)[0]
     for epoch in included_epochs:
-        trans_prob = expm(transition_matrices[epoch]*branch_above[epoch])
+        trans_prob = linalg.expm(transition_matrices[epoch]*branch_above[epoch])
         if direction == "backward":
             current_pos = np.matmul(trans_prob, current_pos)
         else:
             current_pos = np.matmul(current_pos, trans_prob)
     return current_pos
-
-
-def _calc_all_messages(
-        parents,
-        branch_above,
-        node_epoch,
-        ids_asc_time,
-        sample_locations_array,
-        sample_ids,
-        transition_matrices,
-        coal_rates
-    ):
-
-    num_demes = len(sample_locations_array[0])
-    messages = np.ones((len(parents)*2, num_demes), dtype="float64")
-    for id in ids_asc_time:
-        # Within this loop, repeatedly implement Equation 2 from the manuscript
-
-        if id in sample_ids:
-            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
-        else:
-            #current_pos = np.prod(messages[np.where(parents==id)[0]], axis=0)
-            current_pos = np.multiply(coal_rates[node_epoch[id]], np.prod(messages[np.where(parents==id)[0]], axis=0))
-
-        current_pos = current_pos / np.sum(current_pos)
-        
-        messages[id] = _calc_branch_message(
-            current_pos,
-            branch_above[:,id],
-            transition_matrices,
-            direction="backward"
-        )
-
-    for message in messages:
-        print(message)
-    exit()
-    
-    for id in ids_asc_time[::-1]:
-        parent_of = np.where(parents==id)[0]
-        for c in range(len(parent_of)):
-            alt_children = np.delete(parent_of, c)
-            
-            current_pos = np.multiply(coal_rates[node_epoch[id]], np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0))
-
-            current_pos = current_pos / np.sum(current_pos)
-            
-            messages[parent_of[c]+len(parents)] = _calc_branch_message(
-                current_pos,
-                branch_above[:,id],
-                transition_matrices,
-                direction="forward"
-            )
-
-    return messages
 
 def ancs(tree, u):
     """Find all of the ancestors above a node for a tree
@@ -114,6 +80,63 @@ def ancs(tree, u):
          yield u
          u = tree.parent(u)
 
+def calc_all_messages(
+        parents,
+        branch_above,
+        node_epoch,
+        ids_asc_time,
+        sample_locations_array,
+        sample_ids,
+        transition_matrices,
+        coal_rates
+    ):
+    """"""
+
+    num_demes = len(sample_locations_array[0])
+    messages = np.ones((len(parents)*2, num_demes), dtype="float64")
+    for id in ids_asc_time: 
+        if id in sample_ids:
+            current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
+        else:
+            current_pos = _calc_current_pos(
+                id,
+                messages,
+                parents,
+                coal_rates[node_epoch[id]]
+            )
+        parent = parents[id]
+        if parent != -1:
+            messages[id] = _calc_branch_message(
+                current_pos,
+                branch_above[:,id],
+                transition_matrices
+            )
+        else:   # collect roots here
+            messages[id] = current_pos
+    for id in ids_asc_time[::-1]:
+        parent_of = np.where(parents==id)[0]
+        for c in range(len(parent_of)):
+            alt_children = np.delete(parent_of, c)
+            current_pos = np.multiply(coal_rates[node_epoch[id]], np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0))
+            messages[parent_of[c]+len(parents)] = _calc_branch_message(
+                current_pos,
+                branch_above[:,parent_of[c]],
+                transition_matrices,
+                direction="forward"
+            )
+    return messages
+
+def trace_ancestors(start, parents):
+    """
+    """
+
+    lineage = []
+    a = start
+    while a != -1:
+        lineage.append(a)
+        a = parents[a]
+    return np.array(lineage)
+
 def track_lineage_over_time(
         sample,
         times,
@@ -121,14 +144,6 @@ def track_lineage_over_time(
         world_map,
         parameters
     ):
-    """
-    Parameters
-    ----------
-
-    Returns
-    -------
-    positions
-    """
 
     ancestors = [sample] + list(ancs(tree=tree, u=sample))
 
@@ -161,7 +176,7 @@ def track_lineage_over_time(
     pop_sizes = np.maximum(world_map.suitabilities ** alpha, 1e-99)
     coal_rates = 1/(pop_sizes)
 
-    messages = _calc_all_messages(
+    messages = calc_all_messages(
         parents,
         branch_above,
         node_epoch,
@@ -172,16 +187,13 @@ def track_lineage_over_time(
         coal_rates
     )
 
-    print(messages)
-    exit()
-
     positions = np.zeros((len(pc_combos), len(world_map.demes)))
     for element, node_combo in enumerate(pc_combos):
         if node_combo[0] == node_combo[1]:
             if node_combo[0] in sample_ids:
                 node_pos = sample_locations_array[np.where(sample_ids==node_combo[0])[0][0]]
             else:
-                combined = np.prod(np.concatenate((messages[[node_combo[0]+len(parents)]], messages[np.where(parents==node_combo[0])[0]])), axis=0)
+                combined = np.multiply(coal_rates[node_epoch[node_combo[0]]], np.prod(np.concatenate((messages[[node_combo[0]+len(parents)]], messages[np.where(parents==node_combo[0])[0]])), axis=0))
                 node_pos = combined / sum(combined)
         else:
             if node_combo[0] in sample_ids:
@@ -189,7 +201,7 @@ def track_lineage_over_time(
             else:
                 incoming_child_messages = messages[np.where(parents==node_combo[0])[0]]
                 if len(incoming_child_messages) > 0:
-                    combined = np.prod(incoming_child_messages, axis=0)
+                    combined = np.multiply(coal_rates[node_epoch[node_combo[0]]], np.prod(incoming_child_messages, axis=0))
                     child_pos = combined / sum(combined)
                 else:
                     child_pos = np.ones((1,len(world_map.demes)))[0]
@@ -200,7 +212,7 @@ def track_lineage_over_time(
                 backward_messages = backward_messages[backward_messages != node_combo[0]]
                 incoming_parent_messages = np.concatenate((messages[[node_combo[1]+len(parents)]], messages[backward_messages]))
                 if len(incoming_parent_messages) > 0:
-                    combined = np.prod(incoming_parent_messages, axis=0)
+                    combined = np.multiply(coal_rates[node_epoch[node_combo[1]]], np.prod(incoming_parent_messages, axis=0))
                     parent_pos = combined / sum(combined)
                 else:
                     parent_pos = np.ones((1,len(world_map.demes)))[0]
@@ -224,7 +236,6 @@ def track_lineage_over_time(
                 transition_matrices,
                 direction="backward"
             )
-            
             outgoing_parent_message = _calc_branch_message(
                 parent_pos,
                 bl_parent,
@@ -233,7 +244,6 @@ def track_lineage_over_time(
             )
 
             node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
-            node_pos = node_pos / np.sum(node_pos)
-        positions[element] = node_pos
+        positions[element] = node_pos / sum(node_pos)
 
     return positions
