@@ -181,7 +181,7 @@ class WorldMap:
     def get_all_connection_migration_modifiers_at_time(self, time):
         return pd.Series([self.get_connection_migration_modifier_at_time(id, time) for id in self.connections["id"]])
 
-    def _calculate_migration_rate(self, epoch, connection, deme_0, deme_1, parameters):
+    def _calculate_migration_rate(self, epoch, connection, deme_0, deme_1, parameters, direction="backward"):
         """Migration rate is default rate * suit(deme_1)/suit(deme_1) * modifier"""
 
         if "coefficient" in self.parameters:
@@ -198,10 +198,13 @@ class WorldMap:
             mod = parameters[self.parameters.index(mod)]
         else:
             mod = float(mod)
-        rate = (m * suit) * mod
+        if direction == "backward":
+            rate = (m * suit) * mod
+        else:
+            rate = m * mod
         return rate
 
-    def build_transition_matrices(self, parameters):
+    def build_transition_matrices(self, parameters, direction="backward"):
         """Builds the transition matrix based on the world map and migration rate parameters
 
         Row is the target deme, column is the source deme backwards in time.
@@ -224,8 +227,8 @@ class WorldMap:
                 
                 i_0 = self.demes.loc[self.demes["id"]==connection["deme_0"]].index[0]
                 i_1 = self.demes.loc[self.demes["id"]==connection["deme_1"]].index[0]                
-                transition_matrix[e, i_1, i_0] = self._calculate_migration_rate(epoch=e, connection=f, deme_0=i_0, deme_1=i_1, parameters=parameters)
-                transition_matrix[e, i_0, i_1] = self._calculate_migration_rate(epoch=e, connection=f, deme_0=i_1, deme_1=i_0, parameters=parameters)
+                transition_matrix[e, i_1, i_0] = self._calculate_migration_rate(epoch=e, connection=f, deme_0=i_0, deme_1=i_1, parameters=parameters, direction=direction)
+                transition_matrix[e, i_0, i_1] = self._calculate_migration_rate(epoch=e, connection=f, deme_0=i_1, deme_1=i_0, parameters=parameters, direction=direction)
 
             diag = -np.sum(transition_matrix[e], axis=0)
             np.fill_diagonal(transition_matrix[e], diag)

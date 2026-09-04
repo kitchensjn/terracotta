@@ -23,7 +23,7 @@ def _calc_current_pos(id, messages, parents, coal_rate):
 
     return np.multiply(coal_rate, np.prod(messages[np.where(parents==id)[0]], axis=0))
 
-def _calc_branch_message(
+def _calc_branch_message_old(
         current_pos,
         branch_above,
         transition_matrices,
@@ -48,7 +48,6 @@ def _calc_branch_message(
         Probability distribution for location of lineage given subtree below. Length is #demes.
     """
 
-
     included_epochs = np.where(branch_above > 0)[0]
     for epoch in included_epochs:
         trans_prob = linalg.expm(transition_matrices[epoch]*branch_above[epoch])
@@ -56,6 +55,36 @@ def _calc_branch_message(
             current_pos = np.matmul(trans_prob, current_pos)
         else:
             current_pos = np.matmul(current_pos, trans_prob)
+    return current_pos
+
+def _calc_branch_message(
+        current_pos,
+        branch_above,
+        transition_matrices
+    ):
+    """Calculates the message to be passed along a branch above specified node
+
+    Parameters
+    ----------
+    id : int
+        ID of node
+    current_pos : np.array
+        Probability distribution of node's current position given subtree below
+    branch_above : np.array
+        Branch lengths above each node split across epochs. Shape is #epochs x #nodes.
+    direction : string
+
+
+    Returns
+    -------
+    current_pos : np.array
+        Probability distribution for location of lineage given subtree below. Length is #demes.
+    """
+
+    included_epochs = np.where(branch_above > 0)[0]
+    for epoch in included_epochs:
+        trans_prob = linalg.expm(transition_matrices[epoch]*branch_above[epoch])
+        current_pos = np.matmul(trans_prob, current_pos)
     return current_pos
 
 def ancs(tree, u):
@@ -77,8 +106,8 @@ def ancs(tree, u):
 
     u = tree.parent(u)
     while u != -1:
-         yield u
-         u = tree.parent(u)
+        yield u
+        u = tree.parent(u)
 
 def calc_all_messages(
         parents,
@@ -87,7 +116,8 @@ def calc_all_messages(
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices,
+        backward_transition_matrices,
+        forward_transition_matrices,
         coal_rates
     ):
     """"""
@@ -109,7 +139,7 @@ def calc_all_messages(
             messages[id] = _calc_branch_message(
                 current_pos,
                 branch_above[:,id],
-                transition_matrices
+                backward_transition_matrices
             )
         else:   # collect roots here
             messages[id] = current_pos
@@ -121,8 +151,7 @@ def calc_all_messages(
             messages[parent_of[c]+len(parents)] = _calc_branch_message(
                 current_pos,
                 branch_above[:,parent_of[c]],
-                transition_matrices,
-                direction="forward"
+                forward_transition_matrices
             )
     return messages
 
@@ -172,7 +201,8 @@ def track_lineage_over_time(
     sample_locations_array, sample_ids = world_map.build_sample_locations_array()
     parents, branch_above, node_epoch, time_bin_widths, ids_asc_time = deconstruct_tree(tree, world_map.epochs)
     
-    transition_matrices = world_map.build_transition_matrices(parameters=parameters)
+    backward_transition_matrices = world_map.build_transition_matrices(parameters=parameters, direction="backward")
+    forward_transition_matrices = world_map.build_transition_matrices(parameters=parameters, direction="forward")
     pop_sizes = np.maximum(world_map.suitabilities ** alpha, 1e-99)
     coal_rates = 1/(pop_sizes)
 
@@ -183,7 +213,8 @@ def track_lineage_over_time(
         ids_asc_time,
         sample_locations_array,
         sample_ids,
-        transition_matrices,
+        backward_transition_matrices,
+        forward_transition_matrices,
         coal_rates
     )
 
@@ -233,14 +264,12 @@ def track_lineage_over_time(
             outgoing_child_message = _calc_branch_message(
                 child_pos,
                 bl_child,
-                transition_matrices,
-                direction="backward"
+                backward_transition_matrices
             )
             outgoing_parent_message = _calc_branch_message(
                 parent_pos,
                 bl_parent,
-                transition_matrices,
-                direction="forward"
+                forward_transition_matrices
             )
 
             node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
