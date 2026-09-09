@@ -3,7 +3,7 @@ from scipy import linalg
 from .main import deconstruct_tree
 
 
-def _calc_current_pos(id, messages, parents, coal_rate):
+def calc_current_pos(id, messages, parents, coal_rate):
     """Calculates current node position as product of child messages
 
     Parameters
@@ -21,9 +21,13 @@ def _calc_current_pos(id, messages, parents, coal_rate):
         Probability distribution of node's current position given subtree below
     """
 
-    return np.multiply(coal_rate, np.prod(messages[np.where(parents==id)[0]], axis=0))
+    children = np.where(parents==id)[0]
+    current_pos = np.prod(messages[children], axis=0)
+    if len(children) > 1:
+        current_pos = np.multiply(coal_rate, current_pos)
+    return current_pos
 
-def _calc_branch_message_old(
+def calc_branch_message_old(
         current_pos,
         branch_above,
         transition_matrices,
@@ -54,10 +58,11 @@ def _calc_branch_message_old(
         if direction == "backward":
             current_pos = np.matmul(trans_prob, current_pos)
         else:
+            #current_pos = np.matmul(trans_prob, current_pos)
             current_pos = np.matmul(current_pos, trans_prob)
     return current_pos
 
-def _calc_branch_message(
+def calc_branch_message(
         current_pos,
         branch_above,
         transition_matrices
@@ -118,7 +123,8 @@ def calc_all_messages(
         sample_ids,
         backward_transition_matrices,
         forward_transition_matrices,
-        coal_rates
+        coal_rates,
+        method
     ):
     """"""
 
@@ -128,7 +134,7 @@ def calc_all_messages(
         if id in sample_ids:
             current_pos = sample_locations_array[np.where(sample_ids==id)[0][0]]
         else:
-            current_pos = _calc_current_pos(
+            current_pos = calc_current_pos(
                 id,
                 messages,
                 parents,
@@ -136,23 +142,40 @@ def calc_all_messages(
             )
         parent = parents[id]
         if parent != -1:
-            messages[id] = _calc_branch_message(
-                current_pos,
-                branch_above[:,id],
-                backward_transition_matrices
-            )
+            if method == "new":
+                messages[id] = calc_branch_message(
+                    current_pos,
+                    branch_above[:,id],
+                    backward_transition_matrices
+                )
+            else:
+                messages[id] = calc_branch_message_old(
+                    current_pos,
+                    branch_above[:,id],
+                    backward_transition_matrices
+                )
         else:   # collect roots here
             messages[id] = current_pos
     for id in ids_asc_time[::-1]:
         parent_of = np.where(parents==id)[0]
         for c in range(len(parent_of)):
             alt_children = np.delete(parent_of, c)
-            current_pos = np.multiply(coal_rates[node_epoch[id]], np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0))
-            messages[parent_of[c]+len(parents)] = _calc_branch_message(
-                current_pos,
-                branch_above[:,parent_of[c]],
-                forward_transition_matrices
-            )
+            current_pos = np.prod(np.concatenate((messages[[id+len(parents)]], messages[alt_children])), axis=0)
+            if len(alt_children) > 0:
+                current_pos = np.multiply(coal_rates[node_epoch[id]], current_pos)
+            if method == "new":
+                messages[parent_of[c]+len(parents)] = calc_branch_message(
+                    current_pos,
+                    branch_above[:,parent_of[c]],
+                    forward_transition_matrices
+                )
+            else:
+                messages[parent_of[c]+len(parents)] = calc_branch_message_old(
+                    current_pos,
+                    branch_above[:,parent_of[c]],
+                    backward_transition_matrices,
+                    direction="forward"
+                )
     return messages
 
 def trace_ancestors(start, parents):
@@ -166,15 +189,34 @@ def trace_ancestors(start, parents):
         a = parents[a]
     return np.array(lineage)
 
+
+def calc_length_to_node_combo(
+        ancestor_time,
+        child_time,
+        branch_above_child
+    ):
+    
+    branch_length_to_child = int(ancestor_time - child_time)
+    bl_child = branch_above_child.copy()
+    for e in range(len(branch_above_child)):
+        if bl_child[e] >= branch_length_to_child:
+            bl_child[e] = branch_length_to_child
+        branch_length_to_child -= bl_child[e]
+    bl_parent = branch_above_child - bl_child
+    return bl_child, bl_parent
+
+
 def track_lineage_over_time(
         sample,
         times,
         tree,
         world_map,
-        parameters
+        parameters,
+        method="new",
+        coal=True
     ):
 
-    ancestors = [sample] + list(ancs(tree=tree, u=sample))
+    ancestors = [sample] + list(tct.ancs(tree=tree, u=sample))
 
     node_times = []
     for a in ancestors:
@@ -199,14 +241,18 @@ def track_lineage_over_time(
         alpha = 1
 
     sample_locations_array, sample_ids = world_map.build_sample_locations_array()
-    parents, branch_above, node_epoch, time_bin_widths, ids_asc_time = deconstruct_tree(tree, world_map.epochs)
+    parents, branch_above, node_epoch, time_bin_widths, ids_asc_time = tct.deconstruct_tree(tree, world_map.epochs)
     
     backward_transition_matrices = world_map.build_transition_matrices(parameters=parameters, direction="backward")
     forward_transition_matrices = world_map.build_transition_matrices(parameters=parameters, direction="forward")
     pop_sizes = np.maximum(world_map.suitabilities ** alpha, 1e-99)
-    coal_rates = 1/(pop_sizes)
+    if coal:
+        a = 1
+    else:
+        a = 0
+    coal_rates = 1/(np.maximum(pop_sizes, 0.01))**a
 
-    messages = calc_all_messages(
+    messages = tct.calc_all_messages(
         parents,
         branch_above,
         node_epoch,
@@ -215,7 +261,8 @@ def track_lineage_over_time(
         sample_ids,
         backward_transition_matrices,
         forward_transition_matrices,
-        coal_rates
+        coal_rates,
+        method
     )
 
     positions = np.zeros((len(pc_combos), len(world_map.demes)))
@@ -248,30 +295,35 @@ def track_lineage_over_time(
                 else:
                     parent_pos = np.ones((1,len(world_map.demes)))[0]
             
-            branch_length_to_child = int(times[element] - tree.time(node_combo[0]))
-            bl_child = branch_above[:, node_combo[0]].copy()
-            bl_parent = bl_child.copy()
-            whats_left = branch_length_to_child
-            for e in range(len(world_map.epochs)):
-                current = bl_parent[e].copy()
-                if current >= whats_left:
-                    bl_parent[e] -= whats_left
-                else:
-                    bl_parent[e] = 0
-                whats_left -= current
-            bl_child -= bl_parent
-
-            outgoing_child_message = _calc_branch_message(
-                child_pos,
-                bl_child,
-                backward_transition_matrices
-            )
-            outgoing_parent_message = _calc_branch_message(
-                parent_pos,
-                bl_parent,
-                forward_transition_matrices
+            bl_child, bl_parent = calc_length_to_node_combo(
+                times[element],
+                tree.time(node_combo[0]),
+                branch_above[:, node_combo[0]]
             )
 
+            if method == "new":
+                outgoing_child_message = tct.calc_branch_message(
+                    child_pos,
+                    bl_child,
+                    backward_transition_matrices
+                )
+                outgoing_parent_message = tct.calc_branch_message(
+                    parent_pos,
+                    bl_parent,
+                    forward_transition_matrices
+                )
+            else:
+                outgoing_child_message = tct.calc_branch_message_old(
+                    child_pos,
+                    bl_child,
+                    backward_transition_matrices
+                )
+                outgoing_parent_message = tct.calc_branch_message_old(
+                    parent_pos,
+                    bl_parent,
+                    backward_transition_matrices,
+                    direction="forward"
+                )
             node_pos = np.multiply(outgoing_child_message, outgoing_parent_message)
         positions[element] = node_pos / sum(node_pos)
 
