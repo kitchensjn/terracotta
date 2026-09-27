@@ -84,17 +84,18 @@ class WorldMap:
         for suitability_string in self.demes["suitability"]:
             epoch_formatter = suitability_string.replace(",", ":").split(":")
             for epoch_assignment in epoch_formatter[::2]:
-                epoch_assignment = float(epoch_assignment)
+                epoch_assignment = int(float(epoch_assignment))
                 if epoch_assignment not in epochs:
                     epochs.append(epoch_assignment)
         migration_modifier_variables = []
         for modifier_string in self.connections["migration_modifier"]:
             epoch_formatter = modifier_string.replace(",", ":").split(":")
             for t in range(0, len(epoch_formatter), 2):
-                epoch_assignment = float(epoch_formatter[t])
+                epoch_assignment = int(float(epoch_formatter[t]))
                 if epoch_assignment not in epochs:
                     epochs.append(epoch_assignment)
         self.epochs = np.sort(epochs)
+        self.epoch_durations = np.diff(self.epochs, append=(self.epochs[-1]-1))
 
         self.suitabilities = self._build_suitability_array()
 
@@ -102,9 +103,9 @@ class WorldMap:
         modifiers = np.unique(self.connection_modifiers)
         if len(modifiers) > 1:
             for mod in modifiers:
-                if mod.isalpha():
+                if any(char.isalpha() for char in mod):
                     self.parameters.append(mod)
-
+    
         self.samples = None
         if samples is not None:
             self.samples = samples.copy()

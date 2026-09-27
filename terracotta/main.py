@@ -33,7 +33,7 @@ def deconstruct_tree(tree, epochs):
 
     num_nodes = len(tree.postorder())
     parents = np.full(num_nodes, -1, dtype="int64")
-    branch_above = np.zeros((len(epochs), num_nodes), dtype="int64")
+    branch_above = np.zeros((num_nodes, len(epochs)), dtype="int64")
     node_epoch = np.full(num_nodes, -1, dtype="int64")
     time_bin_widths = np.full(num_nodes, -1, dtype="int64")
     ids_asc_time = np.full(num_nodes, -1, dtype="int64")
@@ -46,12 +46,12 @@ def deconstruct_tree(tree, epochs):
             parent_time = tree.time(parent)
             ending_epoch = np.digitize(parent_time, epochs)-1
             if starting_epoch == ending_epoch:
-                branch_above[starting_epoch, node] = math.ceil(parent_time - node_time)
+                branch_above[node, starting_epoch] = math.ceil(parent_time - node_time)
             else:
-                branch_above[starting_epoch, node] = math.ceil(epochs[starting_epoch+1] - node_time)
+                branch_above[node, starting_epoch] = math.ceil(epochs[starting_epoch+1] - node_time)
                 for e in range(starting_epoch+1, ending_epoch):
-                    branch_above[e, node] = math.ceil(epochs[e+1] - epochs[e])
-                branch_above[ending_epoch, node] = math.ceil(parent_time - epochs[ending_epoch])
+                    branch_above[node, e] = math.ceil(epochs[e+1] - epochs[e])
+                branch_above[node, ending_epoch] = math.ceil(parent_time - epochs[ending_epoch])
         ids_asc_time[i] = node
         parents[node] = parent
         time_bin_widths[node] = 1
@@ -95,7 +95,7 @@ def deconstruct_trees(trees, epochs):
         tbw.append(time_bin_widths)
         iat.append(ids_asc_time)
         for e in range(len(epochs)):
-            all_branch_lengths[e].extend(branch_above[e])
+            all_branch_lengths[e].extend(branch_above[:, e])
     unique_branch_lengths = []
     for e in range(len(epochs)):
         unique_branch_lengths.append(np.unique(all_branch_lengths[e]))
@@ -107,7 +107,6 @@ def _run_from_minimize(
         parents,
         branch_above,
         node_epoch,
-        unique_branch_lengths,
         ids_asc_time,
         sample_locations_array_log,
         sample_ids,
@@ -128,11 +127,9 @@ def _run_from_minimize(
         Arrays containing branch above length (split across epochs) for each node, one array per tree
     node_epoch : list
         Arrays containing the epochs of each node, one array per tree
-    unique_branch_lengths : list
-        List of lists containing unique branch lengths in each epoch
     ids_asc_time : list
         Arrays of nodes IDs in time ascending order, one array per tree
-    sample_locations_array : numpy.ndarray
+    sample_locations_array_log : numpy.ndarray
         Probability distribution vector for each sample location (generally 0 in all demes except one)
     sample_ids : numpy.ndarray
         Order of sample IDs for `sample_locations_array`
@@ -152,20 +149,62 @@ def _run_from_minimize(
     for p in range(len(world_map.parameters)):
         if world_map.parameters[p] != "alpha":
             new_parameters[p] = np.exp(new_parameters[p])
-
+    
     return -calc_composite_likelihood_for_parameters(
         new_parameters,
         world_map,
         parents,
         branch_above,
         node_epoch,
-        unique_branch_lengths,
         ids_asc_time,
         sample_locations_array_log,
         sample_ids,
         output_file,
         verbose
     )
+
+def run_for_parameters(
+        parameters,
+        demes_path,
+        connections_path,
+        samples_path,
+        trees_dir_path,
+        chop_time=None
+    ):
+
+    demes = pd.read_csv(demes_path, sep="\t")
+    connections = pd.read_csv(connections_path, sep="\t")
+    samples = pd.read_csv(samples_path, sep="\t")
+    world_map = WorldMap(demes, connections, samples)
+
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+    sample_locations_array = np.maximum(sample_locations_array, 1e-99)
+    sample_locations_array_log = np.log(sample_locations_array)
+
+    if trees_dir_path[-1] != "/":
+        trees_dir_path += "/"
+    
+    trees = []
+    for ts in glob(trees_dir_path+"*"):
+        tree = tskit.load(ts)
+        if chop_time is not None:
+            decap = tree.decapitate(chop_time)
+            tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
+        trees.append(tree.simplify().first())
+
+    parents, branch_above, node_epoch, time_bin_widths, ids_asc_time, unique_branch_lengths = deconstruct_trees(trees=trees, epochs=world_map.epochs)
+
+    return calc_composite_likelihood_for_parameters(
+        parameters,
+        world_map,
+        parents,
+        branch_above,
+        node_epoch,
+        ids_asc_time,
+        sample_locations_array_log,
+        sample_ids
+    )
+
 
 def run(
         demes_path,
@@ -214,6 +253,10 @@ def run(
     samples = pd.read_csv(samples_path, sep="\t")
     world_map = WorldMap(demes, connections, samples)
 
+    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
+    sample_locations_array = np.maximum(sample_locations_array, 1e-99)
+    sample_locations_array_log = np.log(sample_locations_array)
+
     if trees_dir_path[-1] != "/":
         trees_dir_path += "/"
     
@@ -225,21 +268,20 @@ def run(
             tree = decap.subset(nodes=np.where(decap.tables.nodes.time <= chop_time)[0])
         trees.append(tree.simplify().first())
 
-    sample_locations_array, sample_ids = world_map.build_sample_locations_array()
-    sample_locations_array = np.maximum(sample_locations_array, 1e-99)
-    sample_locations_array_log = np.log(sample_locations_array)
-
     parents, branch_above, node_epoch, time_bin_widths, ids_asc_time, unique_branch_lengths = deconstruct_trees(trees=trees, epochs=world_map.epochs)
 
     start = []
     bounds = []
     for p in world_map.parameters:
-        if p != "alpha":
+        if p == "coefficient":
             start.append(np.log(0.0001))
             bounds.append((-10, 10))
-        else:
-            start.append(0.5)
+        elif p == "alpha":
+            start.append(1)
             bounds.append((0, 1))
+        else:
+            start.append(0)
+            bounds.append((-10, 10))
     
     res = minimize(
         fun=_run_from_minimize,
@@ -250,14 +292,13 @@ def run(
             parents,
             branch_above,
             node_epoch,
-            unique_branch_lengths,
             ids_asc_time,
             sample_locations_array_log,
             sample_ids,
             output_file,
             verbose
         ),
-        method="Nelder-Mead"
+        method="L-BFGS-B"
     )
 
     final = res.x.copy()
