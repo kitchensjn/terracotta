@@ -58,40 +58,6 @@ def calc_branch_message(
         current_pos = np.matmul(trans_prob, current_pos)
     return current_pos
 
-def calc_branch_message_old(
-        current_pos,
-        branch_above,
-        transition_matrices,
-        direction="backward"
-    ):
-    """Calculates the message to be passed along a branch above specified node
-
-    Parameters
-    ----------
-    id : int
-        ID of node
-    current_pos : np.array
-        Probability distribution of node's current position given subtree below
-    branch_above : np.array
-        Branch lengths above each node split across epochs. Shape is #epochs x #nodes.
-    direction : string
-
-
-    Returns
-    -------
-    current_pos : np.array
-        Probability distribution for location of lineage given subtree below. Length is #demes.
-    """
-
-    included_epochs = np.where(branch_above > 0)[0]
-    for epoch in included_epochs:
-        trans_prob = linalg.expm(transition_matrices[epoch]*branch_above[epoch])
-        if direction == "backward":
-            current_pos = np.matmul(trans_prob, current_pos)
-        else:
-            current_pos = np.matmul(current_pos, trans_prob)
-    return current_pos
-
 def ancs(tree, u):
     """Find all of the ancestors above a node for a tree
 
@@ -123,8 +89,7 @@ def calc_all_messages(
         sample_ids,
         backward_transition_matrices,
         forward_transition_matrices,
-        coal_rates,
-        method
+        coal_rates
     ):
     """"""
 
@@ -142,18 +107,11 @@ def calc_all_messages(
             )
         parent = parents[id]
         if parent != -1:
-            if method == "new":
-                messages[id] = calc_branch_message(
-                    current_pos,
-                    branch_above[id],
-                    backward_transition_matrices
-                )
-            else:
-                messages[id] = calc_branch_message_old(
-                    current_pos,
-                    branch_above[id],
-                    backward_transition_matrices
-                )
+            messages[id] = calc_branch_message(
+                current_pos,
+                branch_above[id],
+                backward_transition_matrices
+            )
         else:   # collect roots here
             messages[id] = current_pos
     for id in ids_asc_time[::-1]:
@@ -164,19 +122,11 @@ def calc_all_messages(
             if len(alt_children) > 0:
                 current_pos = np.multiply(coal_rates[node_epoch[id]], current_pos)
             current_pos = current_pos / sum(current_pos)
-            if method == "new":
-                messages[parent_of[c]+len(parents)] = calc_branch_message(
-                    current_pos,
-                    branch_above[parent_of[c]],
-                    forward_transition_matrices
-                )
-            else:
-                messages[parent_of[c]+len(parents)] = calc_branch_message_old(
-                    current_pos,
-                    branch_above[parent_of[c]],
-                    backward_transition_matrices,
-                    direction="forward"
-                )
+            messages[parent_of[c]+len(parents)] = calc_branch_message(
+                current_pos,
+                branch_above[parent_of[c]],
+                forward_transition_matrices
+            )
     return messages
 
 def trace_ancestors(start, parents):
@@ -211,7 +161,6 @@ def track_lineage_over_time(
         tree,
         world_map,
         parameters,
-        method,
         uninformed=False
     ):
 
@@ -257,8 +206,7 @@ def track_lineage_over_time(
         sample_ids,
         backward_transition_matrices,
         forward_transition_matrices,
-        coal_rates,
-        method
+        coal_rates
     )
 
     positions = np.zeros((len(pc_combos), len(world_map.demes)))
